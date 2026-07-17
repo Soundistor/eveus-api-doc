@@ -51,11 +51,42 @@ curl -s -u USER:PASS -X POST \
 | `3PGRW001A-R3.0x` | three-phase, current generation (identical API) |
 | older units | legacy generation — see [API.md §7](API.md#7-legacy-generation-differences) |
 
+## Manufacturer & official resources
+
+For the product itself — purchase, warranty, official firmware, and support —
+refer to the manufacturer. This project is **not** a source of firmware or official
+support.
+
+- **Official site:** https://eveus.ua/
+
+If you need a firmware update or have a hardware/warranty question, use the
+manufacturer's official channels, not this repository.
+
 ## Contributing
 
 Corrections, additional fields, and captures from other firmware versions are
 welcome — open an issue or PR. Please **redact serial numbers, IPs, MACs,
 passwords, and OCPP keys** from any captured examples.
+
+## Disclaimer
+
+⚠️ **Unofficial, community project — use at your own risk.**
+
+- Not affiliated with, authorised by, or endorsed by Eveus, United Chargers, or any
+  manufacturer or distributor. All product names and trademarks belong to their
+  respective owners and are used only to identify the hardware described.
+- Provided **"as is", without warranty of any kind**. The information may be
+  incomplete, inaccurate, or outdated, and may not match your firmware.
+- An EV charger switches **mains voltage and high current**. Sending commands you
+  do not fully understand — especially calibration parameters, `factoryReset`, or
+  hardware-type/relay settings — **can permanently damage the device, corrupt its
+  metering or safety calibration, or create a safety hazard.**
+- Use only against hardware you own or are explicitly authorised to operate, on your
+  own network. Nothing here is electrical or safety advice.
+
+You are solely responsible for anything you do with this information; to the maximum
+extent permitted by law the authors and contributors accept **no liability**. Full
+text: [API.md → Disclaimer](API.md#disclaimer--use-at-your-own-risk).
 
 ## License
 
