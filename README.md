@@ -6,7 +6,7 @@ scripts, energy managers) can read status and control the charger over the LAN.
 
 > ⚠️ **Unofficial.** Not affiliated with, authorised by, or endorsed by the
 > manufacturer. Provided as-is, no warranty. An EV charger switches mains voltage —
-> **use at your own risk** and read the [disclaimer](API.md#11-disclaimer--use-at-your-own-risk)
+> **use at your own risk** and read the [disclaimer](API.md#disclaimer--use-at-your-own-risk)
 > before sending any command.
 
 ## 📖 The reference
@@ -19,6 +19,13 @@ scripts, energy managers) can read status and control the charger over the LAN.
 - `state` / `subState` / `aiStatus` enumerations
 - Single-phase vs three-phase differences
 - Legacy vs current API generations, and changes across firmware versions
+
+➡️ **[openapi.yaml](openapi.yaml)** — machine-readable OpenAPI 3.1 spec (all 12
+endpoints, `MainResponse` schema, examples). Import it into Swagger UI, Postman,
+Insomnia, or generate clients with `openapi-generator`.
+
+> Note: the API predates OpenAPI conventions — every operation is `POST` (even
+> reads), so tools will show reads as POST operations. That is expected.
 
 ## Quick start
 

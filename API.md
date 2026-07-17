@@ -20,6 +20,41 @@ firmware releases. Verify against your own device before relying on anything her
 
 ---
 
+## Disclaimer — use at your own risk
+
+⚠️ **Read this before sending any command to your charger.**
+
+- **Unofficial & independent.** This document is a community reference. It is not
+  affiliated with, authorised by, or endorsed by Eveus, United Chargers, or any
+  manufacturer or distributor. All product names and trademarks belong to their
+  respective owners and are used only to identify the hardware being described.
+- **No warranty.** The information is provided "as is", without warranty of any
+  kind, express or implied, including but not limited to fitness for a particular
+  purpose. It may be incomplete, inaccurate, or outdated, and may not match your
+  firmware.
+- **You assume all risk.** You are solely responsible for anything you do with
+  this information. To the maximum extent permitted by law, the authors and
+  contributors accept **no liability** for any damage, loss, injury, fire,
+  electric shock, voided warranty, data loss, or other harm arising from its use.
+- **Danger — high-voltage equipment.** An EV charger switches mains voltage and
+  high current. Sending commands you do not fully understand — especially
+  calibration parameters (`kV*`, `kC*`, `voltKoef*`, `curKoef*`, `leakKoef`),
+  `factoryReset`, or hardware-type/relay settings — **can permanently damage the
+  device, corrupt its metering or safety calibration, or create a safety hazard.**
+  Do not experiment on a charger connected to a vehicle or live load.
+- **Local, authorised use only.** Use this only against hardware you own or are
+  explicitly authorised to operate, on your own network. The API is unauthenticated-
+  by-default and unencrypted (plain HTTP) — treat the device as untrusted on shared
+  networks.
+- **Not professional advice.** Nothing here is electrical, safety, or engineering
+  advice. For anything involving mains wiring or hardware modification, consult a
+  qualified electrician and your local regulations.
+
+See also the [full license](#11-license). Corrections and additions from the
+community are welcome.
+
+---
+
 ## 1. Firmware naming & generations
 
 A station runs **two** microcontrollers, each with its own firmware version, both
@@ -537,41 +572,7 @@ only needs to start reading `curMeas2/3` / `voltMeas2/3` to expose the extra pha
 
 ---
 
-## 11. Disclaimer — use at your own risk
-
-**Read this before sending any command to your charger.**
-
-- **Unofficial & independent.** This document is a community reference. It is not
-  affiliated with, authorised by, or endorsed by Eveus, United Chargers, or any
-  manufacturer or distributor. All product names and trademarks belong to their
-  respective owners and are used only to identify the hardware being described.
-- **No warranty.** The information is provided "as is", without warranty of any
-  kind, express or implied, including but not limited to fitness for a particular
-  purpose. It may be incomplete, inaccurate, or outdated, and may not match your
-  firmware.
-- **You assume all risk.** You are solely responsible for anything you do with
-  this information. To the maximum extent permitted by law, the authors and
-  contributors accept **no liability** for any damage, loss, injury, fire,
-  electric shock, voided warranty, data loss, or other harm arising from its use.
-- **Danger — high-voltage equipment.** An EV charger switches mains voltage and
-  high current. Sending commands you do not fully understand — especially
-  calibration parameters (`kV*`, `kC*`, `voltKoef*`, `curKoef*`, `leakKoef`),
-  `factoryReset`, or hardware-type/relay settings — **can permanently damage the
-  device, corrupt its metering or safety calibration, or create a safety hazard.**
-  Do not experiment on a charger connected to a vehicle or live load.
-- **Local, authorised use only.** Use this only against hardware you own or are
-  explicitly authorised to operate, on your own network. The API is unauthenticated-
-  by-default and unencrypted (plain HTTP) — treat the device as untrusted on shared
-  networks.
-- **Not professional advice.** Nothing here is electrical, safety, or engineering
-  advice. For anything involving mains wiring or hardware modification, consult a
-  qualified electrician and your local regulations.
-
-Corrections and additions from the community are welcome.
-
----
-
-## 12. License
+## 11. License
 
 This documentation (text, tables, and examples) is released under
 **[Creative Commons Attribution 4.0 International (CC BY 4.0)](https://creativecommons.org/licenses/by/4.0/)**.

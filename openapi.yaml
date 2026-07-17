@@ -1,0 +1,660 @@
+openapi: 3.1.0
+info:
+  title: Eveus / United Chargers — Local HTTP API
+  version: "1.0.0"
+  summary: Local LAN HTTP API of Eveus / United Chargers EV charging stations.
+  description: |
+    **Unofficial, community-maintained** OpenAPI description of the local HTTP API
+    exposed by Eveus / United Chargers EV charging stations. Not affiliated with or
+    endorsed by the manufacturer. Provided "as is", no warranty — **use at your own
+    risk**. An EV charger switches mains voltage; sending commands you do not
+    understand (calibration, factory reset, hardware type) can damage the device or
+    create a safety hazard. See the full reference and disclaimer in `API.md`.
+
+    ## API quirks (read before using this spec)
+    - **Every** endpoint is `POST`, even pure reads (`/main`, `/init`, …). There are
+      no `GET` operations.
+    - Write/command bodies use `application/x-www-form-urlencoded`.
+    - Data endpoints return `application/json`; config-save endpoints return
+      `text/plain` (empty on success, an error string on failure).
+    - Transport is plain **HTTP** on port 80 (no TLS), LAN only.
+    - Auth is **HTTP Basic** (may be disabled if no password is set on the device).
+
+    Field set matches firmware family `?PGRW001A-R3.0x` (current generation). Older
+    "legacy" firmware differs — see `API.md` §7.
+  license:
+    name: CC BY 4.0
+    url: https://creativecommons.org/licenses/by/4.0/
+  contact:
+    name: Project repository
+    url: https://github.com/Soundistor/eveus-api-doc
+
+servers:
+  - url: http://{chargerIp}
+    description: Charger on the local network
+    variables:
+      chargerIp:
+        default: 192.168.1.123
+        description: IP address of the charger on your LAN
+
+security:
+  - basicAuth: []
+
+tags:
+  - name: status
+    description: Live status and configuration snapshots
+  - name: control
+    description: Setting parameters and firing commands
+  - name: network
+    description: Wi-Fi / access-point / HTTP configuration
+  - name: ocpp
+    description: OCPP integration
+  - name: diagnostics
+    description: Debug and logs
+
+paths:
+  /main:
+    post:
+      tags: [status]
+      operationId: getMain
+      summary: Live status + configuration snapshot
+      description: |
+        Returns a single JSON object combining live telemetry (state, currents,
+        voltages, power, temperatures, energy) and the current configuration. The
+        device's own web UI polls this on an interval. Request body is empty.
+      responses:
+        "200":
+          description: Status object
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MainResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  /pageEvent:
+    post:
+      tags: [control]
+      operationId: setPageEvent
+      summary: Set a single parameter / fire a command
+      description: |
+        Writes one parameter or fires an action. The body is a single
+        `name=value` pair (the web UI additionally sends a `pageEvent: <name>`
+        request header, but the body is the payload). Multiple parameters may be
+        sent at once as an `&`-joined body.
+
+        ⚠️ Calibration parameters (`kV*`, `kC*`, `kCl`), `factoryReset`,
+        `evseType`/`typeRelay` and similar can permanently damage the device — do
+        not send them unless you fully understand the effect.
+      requestBody:
+        required: true
+        content:
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: "#/components/schemas/PageEventRequest"
+            examples:
+              setCurrent:
+                summary: Set charging current to 16 A
+                value:
+                  currentSet: "16"
+              enableCharging:
+                summary: Enable charging (current generation, 0 = on)
+                value:
+                  evseEnabled: "0"
+              setAiMode:
+                summary: Adaptive mode = voltage
+                value:
+                  aiMode: "1"
+      responses:
+        "200":
+          $ref: "#/components/responses/TextOk"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  /init:
+    post:
+      tags: [status]
+      operationId: getInit
+      summary: Full init dump (config incl. Wi-Fi / HTTP / OCPP)
+      description: |
+        JSON superset of `/main` configuration used by the UI to populate settings
+        pages, including `httpUsername`, Wi-Fi SSIDs, and OCPP URL fields. Request
+        body is empty.
+      responses:
+        "200":
+          description: Init/config object (superset of MainResponse)
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  /config:
+    post:
+      tags: [network]
+      operationId: setWifiStation
+      summary: Save Wi-Fi station config (up to 3 networks)
+      description: |
+        Saves station (client) Wi-Fi configuration. R3.05.x accepts up to three
+        networks (`*`, `*2`, `*3`) plus static-IP and auto-connect per network;
+        R3.02.x accepted a single network (`ssidName`, `ssidPassword`,
+        `ssidPasswordConf`, `WifiMode`, `mac_bind`, `STA_MAC`).
+      requestBody:
+        required: true
+        content:
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: "#/components/schemas/WifiStationConfig"
+      responses:
+        "200":
+          $ref: "#/components/responses/TextOk"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  /configAP:
+    post:
+      tags: [network]
+      operationId: setAccessPoint
+      summary: Save access-point (hotspot) config
+      requestBody:
+        required: true
+        content:
+          application/x-www-form-urlencoded:
+            schema:
+              type: object
+              properties:
+                ssidNameAP:
+                  type: string
+                ssidPasswordAP:
+                  type: string
+                ssidPasswordAPConf:
+                  type: string
+                  description: Must match ssidPasswordAP
+      responses:
+        "200":
+          $ref: "#/components/responses/TextOk"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  /configHttp:
+    post:
+      tags: [network]
+      operationId: setHttpCredentials
+      summary: Save web login / password / auth key
+      requestBody:
+        required: true
+        content:
+          application/x-www-form-urlencoded:
+            schema:
+              type: object
+              properties:
+                httpUsername:
+                  type: string
+                httpPassword:
+                  type: string
+                  format: password
+                httpPasswordConf:
+                  type: string
+                  format: password
+                  description: Must match httpPassword
+                authenticationKey:
+                  type: string
+      responses:
+        "200":
+          $ref: "#/components/responses/TextOk"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  /scan:
+    post:
+      tags: [network]
+      operationId: startWifiScan
+      summary: Start a Wi-Fi scan
+      description: Triggers a scan; poll `/scanResult` for the list. Body is empty.
+      responses:
+        "200":
+          $ref: "#/components/responses/TextOk"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  /scanResult:
+    post:
+      tags: [network]
+      operationId: getWifiScanResult
+      summary: Poll Wi-Fi scan results
+      responses:
+        "200":
+          description: Array of discovered networks
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/ScanResultItem"
+              example:
+                - name: MyHomeWiFi
+                  rssi: -62
+                  mac: "aa:bb:cc:dd:ee:ff"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  /debug:
+    post:
+      tags: [diagnostics]
+      operationId: getDebug
+      summary: Diagnostic snapshot
+      description: |
+        Diagnostic JSON: calibration trims (`tr_*`), action flags (`a_*`),
+        Control-Pilot diagnostics (`cp_*`), etc. Structure is firmware-specific.
+      responses:
+        "200":
+          description: Diagnostic object
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  /get_logResult:
+    post:
+      tags: [diagnostics]
+      operationId: getLog
+      summary: Retrieve device log
+      responses:
+        "200":
+          description: Device log
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  /ocppEvent:
+    post:
+      tags: [ocpp]
+      operationId: setOcpp
+      summary: Save OCPP settings / fire OCPP action
+      requestBody:
+        required: true
+        content:
+          application/x-www-form-urlencoded:
+            schema:
+              type: object
+              properties:
+                ocppEnabled:
+                  type: integer
+                  enum: [0, 1]
+                urlProtocol:
+                  type: string
+                  description: e.g. ws / wss
+                urlUrl:
+                  type: string
+                  example: ocpp.unitedchargers.com
+                urlPort:
+                  type: integer
+                  example: 80
+                urlPath:
+                  type: string
+                authenticationKey:
+                  type: string
+      responses:
+        "200":
+          $ref: "#/components/responses/TextOk"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  /ocppData:
+    post:
+      tags: [ocpp]
+      operationId: getOcppData
+      summary: OCPP status / data
+      responses:
+        "200":
+          description: OCPP status object
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+components:
+  securitySchemes:
+    basicAuth:
+      type: http
+      scheme: basic
+      description: |
+        HTTP Basic auth. May be absent if no password is configured on the device.
+        Change it via `/configHttp`.
+
+  responses:
+    TextOk:
+      description: |
+        Plain-text result. Empty body on success; a non-empty string describes an
+        error (e.g. password mismatch).
+      content:
+        text/plain:
+          schema:
+            type: string
+    Unauthorized:
+      description: Missing or invalid HTTP Basic credentials
+      headers:
+        WWW-Authenticate:
+          schema:
+            type: string
+          example: 'Basic realm="Please enter login and password"'
+
+  schemas:
+    ScanResultItem:
+      type: object
+      properties:
+        name:
+          type: string
+          description: SSID
+        rssi:
+          type: integer
+          description: Signal strength (dBm)
+        mac:
+          type: string
+          description: BSSID / access-point MAC
+      required: [name, rssi, mac]
+
+    PageEventRequest:
+      type: object
+      description: |
+        A single `name=value` parameter (or several joined with `&`). Only the most
+        common, safe parameters are listed; the device accepts more (see `API.md`
+        §5.2). Values are strings on the wire.
+      additionalProperties:
+        type: string
+      properties:
+        currentSet:
+          type: string
+          description: Charging current setpoint (A). UI zero-pads to 2 digits.
+        evseEnabled:
+          type: string
+          description: "Enable/disable charging. Current generation: 0 = on, 1 = off."
+        oneCharge:
+          type: string
+          description: One-shot charge for the current session (0/1)
+        chargeNow:
+          type: string
+          description: Force charge now, overriding limits (0/1)
+        aiMode:
+          type: string
+          description: "Adaptive mode: 0 off, 1 voltage, 2 tesla_auto, 3 power"
+        broadcastMode:
+          type: string
+          description: Broadcast/master mode (0/1). R3.05.x+
+        energyLimitS:
+          type: string
+          description: Session energy-limit setpoint (kWh)
+        systemTime:
+          type: string
+          description: Set clock. Current generation = unix epoch (seconds, UTC).
+        rstEM1:
+          type: string
+          description: Reset internal energy meter 1
+        rstEM2:
+          type: string
+          description: Reset internal energy meter 2
+
+    WifiStationConfig:
+      type: object
+      description: |
+        Wi-Fi station config. Primary network fields are required; `*2`/`*3` and
+        static-IP fields are R3.05.x only.
+      properties:
+        ssidName: { type: string, description: Primary SSID }
+        ssidPassword: { type: string, format: password }
+        ssidPasswordConf: { type: string, format: password, description: "R3.02.x confirm field" }
+        WifiMode: { type: string }
+        mac_bind: { type: string, description: Bind to a specific router MAC }
+        STA_MAC: { type: string }
+        auto_conn: { type: string, description: Auto-connect toggle }
+        stat_ip_s: { type: string, description: Static-IP enable }
+        stat_ip: { type: string, description: Static IP address }
+        stat_gw: { type: string, description: Gateway }
+        ssidName2: { type: string }
+        ssidPassword2: { type: string, format: password }
+        mac_bind2: { type: string }
+        STA_MAC2: { type: string }
+        auto_conn2: { type: string }
+        stat_ip_s2: { type: string }
+        stat_ip2: { type: string }
+        stat_gw2: { type: string }
+        ssidName3: { type: string }
+        ssidPassword3: { type: string, format: password }
+        mac_bind3: { type: string }
+        STA_MAC3: { type: string }
+        auto_conn3: { type: string }
+        stat_ip_s3: { type: string }
+        stat_ip3: { type: string }
+        stat_gw3: { type: string }
+      required: [ssidName, ssidPassword]
+
+    MainResponse:
+      type: object
+      description: |
+        Live status + configuration (current generation). Field presence and exact
+        naming vary slightly by firmware; `additionalProperties` is allowed.
+        Notable: on single-phase hardware `curMeas2/3` and `voltMeas2/3` are always 0.
+        `evseEnabled` is inverted vs intuition (0 = charging enabled).
+        `typeEvse` was renamed to `evseType` in R3.05.x.
+      additionalProperties: true
+      properties:
+        state:
+          type: integer
+          description: "Charge state 0..7 (0 startup,1 system_test,2 standby,3 connected,4 charging,5 charge_complete,6 paused,7 error)"
+        subState:
+          type: integer
+          description: Error codes when state==7, otherwise limit codes. See API.md §6.2
+        pilot:
+          type: integer
+          description: Control-Pilot level / connection state
+        evseEnabled:
+          type: integer
+          description: "0 = charging enabled, 1 = disabled (current generation)"
+        currentSet:
+          type: integer
+          description: Charging current setpoint (A)
+        curDesign:
+          type: integer
+          description: Hardware max current (A)
+        minCurrent:
+          type: integer
+        minVoltage:
+          type: integer
+        curMeas1:
+          type: number
+          description: Phase 1 current (A)
+        curMeas2:
+          type: number
+          description: Phase 2 current (A). 0 on single-phase.
+        curMeas3:
+          type: number
+          description: Phase 3 current (A). 0 on single-phase.
+        voltMeas1:
+          type: integer
+          description: Phase 1 voltage (V)
+        voltMeas2:
+          type: integer
+          description: Phase 2 voltage (V). 0 on single-phase.
+        voltMeas3:
+          type: integer
+          description: Phase 3 voltage (V). 0 on single-phase.
+        powerMeas:
+          type: integer
+          description: Active power (W)
+        temperature1:
+          type: integer
+          description: Box temperature (°C)
+        temperature2:
+          type: integer
+          description: Plug temperature (°C)
+        leakValue:
+          type: integer
+          description: Earth-leakage current (mA)
+        leakValueH:
+          type: integer
+        ground:
+          type: integer
+        vBat:
+          type: number
+          description: RTC backup battery (V)
+        RSSI:
+          type: integer
+          description: Wi-Fi signal (dBm)
+        sessionTime:
+          type: integer
+          description: Current session duration (s)
+        sessionEnergy:
+          type: number
+          description: Current session energy (kWh)
+        sessionMoney:
+          type: number
+        sessionStarted:
+          type: integer
+        totalEnergy:
+          type: number
+          description: Lifetime energy (kWh)
+        IEM1:
+          type: number
+          description: Internal energy meter 1 (kWh)
+        IEM2:
+          type: number
+        IEM1_money:
+          type: number
+        IEM2_money:
+          type: number
+        aiStatus:
+          type: integer
+          description: "Adaptive mode: 0 off,1 voltage,2 tesla_auto,3 power"
+        aiVoltage:
+          type: integer
+        groundCtrl:
+          type: integer
+        oneCharge:
+          type: integer
+        suspendLimits:
+          type: integer
+        suspendErrors:
+          type: integer
+        delayedLimit:
+          type: integer
+        timeLimitS:
+          type: integer
+        energyLimitS:
+          type: number
+        moneyLimitS:
+          type: number
+        timeLimit:
+          type: integer
+        energyLimit:
+          type: number
+        moneyLimit:
+          type: number
+        tarif:
+          type: integer
+        activeTarif:
+          type: integer
+        tarifAEnable: { type: integer }
+        tarifBEnable: { type: integer }
+        tarifAValue: { type: integer }
+        tarifBValue: { type: integer }
+        tarifAStart: { type: integer }
+        tarifAStop: { type: integer }
+        tarifBStart: { type: integer }
+        tarifBStop: { type: integer }
+        sh1Enabled: { type: integer }
+        sh1Start: { type: integer }
+        sh1Stop: { type: integer }
+        sh1CurrentEnable: { type: integer }
+        sh1CurrentValue: { type: integer }
+        sh1EnergyEnable: { type: integer }
+        sh1EnergyValue: { type: number }
+        sh2Enabled: { type: integer }
+        sh2Start: { type: integer }
+        sh2Stop: { type: integer }
+        sh2CurrentEnable: { type: integer }
+        sh2CurrentValue: { type: integer }
+        sh2EnergyEnable: { type: integer }
+        sh2EnergyValue: { type: number }
+        timerType: { type: integer }
+        timeZone: { type: integer }
+        lang: { type: integer }
+        evseType:
+          type: integer
+          description: Hardware type. Named `typeEvse` on R3.02.x and earlier.
+        typeRelay: { type: integer }
+        adapter:
+          type: integer
+          description: Adapter code (255 = none)
+        ocppEnabled: { type: integer }
+        ocppconnected: { type: integer }
+        ocppOfflineAva: { type: integer }
+        serialNum: { type: string }
+        stationId: { type: string }
+        fwCRC32: { type: string }
+        verFWMain:
+          type: string
+          description: Power/status controller firmware version
+        verFWWifi:
+          type: string
+          description: Wi-Fi module firmware version (prefix 1PGRW=1-phase, 3PGRW=3-phase)
+        verFWStatus:
+          type: integer
+        systemTime:
+          description: "Current generation: unix epoch (seconds). Legacy: 'HH:MM:SS' string."
+          oneOf:
+            - type: integer
+            - type: string
+      example:
+        state: 4
+        subState: 0
+        pilot: 2
+        evseEnabled: 0
+        currentSet: 30
+        curDesign: 32
+        curMeas1: 28.52
+        curMeas2: 0
+        curMeas3: 0
+        voltMeas1: 212
+        voltMeas2: 0
+        voltMeas3: 0
+        powerMeas: 6048
+        temperature1: 18
+        temperature2: 6
+        leakValue: 0
+        leakValueH: 44
+        vBat: 2.82
+        RSSI: -63
+        sessionTime: 11183
+        sessionEnergy: 16.01
+        sessionMoney: 82.12
+        totalEnergy: 2123.99
+        IEM1: 103.96
+        IEM2: 2123.99
+        aiStatus: 3
+        aiVoltage: 195
+        evseType: 1
+        typeRelay: 0
+        adapter: 255
+        lang: 1
+        ocppEnabled: 0
+        ocppconnected: 0
+        ocppOfflineAva: 1
+        serialNum: "EVS-XXXXXXXXXXXX"
+        stationId: "EVS-XXXXXXXXXXXX"
+        fwCRC32: "8CF51E06"
+        verFWMain: "GRM070A-R3.02.9"
+        verFWWifi: "1PGRW001A-R3.02.9"
+        verFWStatus: 1
+        systemTime: 1734022761
