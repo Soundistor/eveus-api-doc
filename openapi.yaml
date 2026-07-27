@@ -86,12 +86,16 @@ paths:
         Body size limit is **511 bytes**; exceeding it returns `content too long`.
 
         ⚠️ **HTTP 200 does not mean success.** Application-level rejections are
-        returned as 200 with a plain-text body (`ILLEGAL_CMD`,
-        `Failed to post control value`, `content too long`). Success is the bare
-        string `OK`, confirmed on a live device — an earlier version of this spec
-        named `mainPost successfully` based on static string analysis, but that
-        string was never observed on the wire. Inspect the body, not just the
-        status.
+        returned as 200 with a plain-text body (`ILLEGAL_CMD`, `content too long`).
+        Success is the bare string `OK`, confirmed on a live device — an earlier
+        version of this spec named `mainPost successfully` based on static string
+        analysis, but that string was never observed on the wire. Inspect the
+        body, not just the status.
+
+        `Failed to post control value` is a **transport-level** failure — the POST
+        body itself could not be read (e.g. the connection was cut mid-request, see
+        the one-connection-at-a-time note below) — not an application-level
+        rejection of the value. Retry rather than treating it as a refusal.
 
         The station serves **one connection at a time** and closes the existing
         session when a new one arrives, so requests must be serialised. Allow about
@@ -515,10 +519,15 @@ components:
             its own timeZone offset, so /main reads back local time. See API.md 4.3.
         rstEM1:
           type: string
-          description: Reset internal energy meter 1
+          description: |
+            Reset internal energy meter 1. The station's own UI posts the literal
+            value `undefined` (a vendor client bug); the firmware acts on the
+            parameter name alone. `1` is expected to work too but is unconfirmed.
         rstEM2:
           type: string
-          description: Reset internal energy meter 2
+          description: |
+            Reset internal energy meter 2 — also zeros `totalEnergy` on observed
+            devices. Same `undefined` value quirk as rstEM1.
 
     WifiStationConfig:
       type: object

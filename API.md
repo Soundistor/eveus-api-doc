@@ -421,7 +421,7 @@ accepted one unless you read the body:
 |---|---|
 | `OK` | accepted — confirmed on a live device (`/pageEvent`, R3.05.4/5); treat this as the success body, not the string below |
 | `ILLEGAL_CMD` | unknown parameter name, or the controller rejected the command |
-| `Failed to post control value` | the value could not be handed to the charge controller |
+| `Failed to post control value` | the POST body itself could not be read — e.g. the connection was cut mid-request (see the one-connection-at-a-time note below). This is a transport-level failure, not a rejection of the value by the charge controller; retrying is the appropriate response |
 | `content too long` | request body too large (see limits below) |
 | `Error: already started` | start command while a session is already running |
 
@@ -460,7 +460,7 @@ The only status codes the vendor code sets itself are `200`, `302` (UI route red
 | `chargeNow` | `0` | **Clears every limit and schedule enable flag** — a reset command rather than a "start" command. The station's own UI always sends `0` |
 | `aiMode` | 0/1/2/3 | Adaptive mode, see §6.3. Read back as `aiStatus` |
 | `broadcastMode` | 0/1/2 | Soft-AP broadcast policy: `0` = always on, `1` = off once connected, `2` = always off. Other values are rejected with `Wrong Mode. Use 0, 1 or 2.` |
-| `rstEM1` / `rstEM2` | *(no value)* | Reset trip meter A / B. The UI sends these with no value at all. ⚠️ `rstEM2` also zeroes `totalEnergy` on observed devices |
+| `rstEM1` / `rstEM2` | *(no value)* | Reset trip meter A / B. The station's own UI literally posts `rstEM1=undefined` / `rstEM2=undefined` (a vendor client bug — the value argument is omitted, not empty), and the firmware acts on the parameter name alone. Sending `rstEM1=1` is expected to work too but has not been confirmed against a device. ⚠️ `rstEM2` also zeroes `totalEnergy` on observed devices |
 
 ### 5.2 Full command list (49 commands, identical on 1P & 3P)
 
