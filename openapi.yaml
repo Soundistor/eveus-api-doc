@@ -79,9 +79,20 @@ paths:
       summary: Set a single parameter / fire a command
       description: |
         Writes one parameter or fires an action. The body is a single
-        `name=value` pair (the web UI additionally sends a `pageEvent: <name>`
-        request header, but the body is the payload). Multiple parameters may be
-        sent at once as an `&`-joined body.
+        `name=value` pair. The web UI additionally sends a `pageEvent: <name>`
+        request header, but it is **optional** — the parameter name is taken from
+        the body. Multiple parameters may be sent at once as an `&`-joined body.
+
+        Body size limit is **511 bytes**; exceeding it returns `content too long`.
+
+        ⚠️ **HTTP 200 does not mean success.** Application-level rejections are
+        returned as 200 with a plain-text body (`ILLEGAL_CMD`,
+        `Failed to post control value`, `content too long`). Success is
+        `mainPost successfully`. Inspect the body, not just the status.
+
+        The station serves **one connection at a time** and closes the existing
+        session when a new one arrives, so requests must be serialised. Allow about
+        two poll cycles before reading a written value back.
 
         ⚠️ Calibration parameters (`kV*`, `kC*`, `kCl`), `factoryReset`,
         `evseType`/`typeRelay` and similar can permanently damage the device — do
@@ -263,15 +274,84 @@ paths:
     post:
       tags: [diagnostics]
       operationId: getLog
-      summary: Retrieve device log
+      summary: Completed-session log (4-record ring, newest first)
+      description: >-
+        Returns per-session summary records, newest first. The ring holds 4 records.
+        The newest record is the session IN PROGRESS and updates live, so it is not final
+        until the next session pushes it down. Timestamps are the session START, frozen at
+        whatever the device clock read then and never corrected, so records are not
+        necessarily monotonic. There is no year field. See API.md 10.1.
       responses:
         "200":
-          description: Device log
+          description: Array of session summary records, newest first
           content:
             application/json:
               schema:
-                type: object
-                additionalProperties: true
+                type: array
+                items:
+                  type: object
+                  properties:
+                    log_mnth: { type: integer, description: session start month }
+                    log_dd:   { type: integer, description: session start day }
+                    log_hh:   { type: integer, description: session start hour }
+                    log_mm:   { type: integer, description: session start minute }
+                    log_sec:  { type: integer, description: session start second }
+                    s_hh:     { type: integer, description: duration hours }
+                    s_mm:     { type: integer, description: duration minutes }
+                    s_sec:    { type: integer, description: duration seconds }
+                    s_enrg:   { type: number,  description: energy (kWh) }
+                    s_cost:   { type: number,  description: cost (currency) }
+                example:
+                  - log_mnth: 7
+                    log_dd: 27
+                    log_hh: 10
+                    log_mm: 27
+                    log_sec: 58
+                    s_hh: 0
+                    s_mm: 2
+                    s_sec: 56
+                    s_enrg: 0.345
+                    s_cost: 1.703
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  /getLogData:
+    post:
+      tags: [diagnostics]
+      operationId: getEventLog
+      summary: Event log (CSV, includes the year)
+      description: >-
+        Returns CSV text, not JSON, with the header
+        TS,Src,Evt,cId,Data0,Data1,Data2,v1,v2,v3,c1,c2,c3,power,energy.
+        TS is %Y-%m-%dT%H:%M:%S and does include the year, unlike /get_logResult.
+        This is an event log with instantaneous power/energy columns and no per-session
+        summary. See API.md 10.2.
+      responses:
+        "200":
+          description: CSV event log
+          content:
+            text/csv:
+              schema:
+                type: string
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  /cleanLogData:
+    post:
+      tags: [diagnostics]
+      operationId: cleanEventLog
+      summary: Erase the event log
+      description: >-
+        Erases the CSV event log returned by /getLogData. Takes no parameters and no
+        confirmation token.
+      responses:
+        "200":
+          description: Plain-text result
+          content:
+            text/plain:
+              schema:
+                type: string
+                examples: ["clan logs successfully"]
         "401":
           $ref: "#/components/responses/Unauthorized"
 
@@ -386,19 +466,50 @@ components:
           description: One-shot charge for the current session (0/1)
         chargeNow:
           type: string
-          description: Force charge now, overriding limits (0/1)
+          description: >-
+            Clears every limit and schedule enable flag. A reset command rather than a
+            "start" command; the station's own UI always sends 0.
         aiMode:
           type: string
-          description: "Adaptive mode: 0 off, 1 voltage, 2 tesla_auto, 3 power"
+          description: >-
+            "Adaptive mode (write name; read it back as aiStatus): 0 off, 1 voltage,
+            2 auto, 3 power"
         broadcastMode:
           type: string
-          description: Broadcast/master mode (0/1). R3.05.x+
+          description: >-
+            Soft-AP broadcast policy: 0 = always on, 1 = off once connected,
+            2 = always off. Other values are rejected. R3.05.x+
         energyLimitS:
           type: string
-          description: Session energy-limit setpoint (kWh)
+          description: >-
+            Energy-limit ENABLE flag (0/1). The trailing S is a switch, not a setpoint;
+            the value itself is energyLimit.
+        energyLimit:
+          type: string
+          description: >-
+            Energy-limit VALUE. Written in watt-hours (multiply kWh by 1000) but read back
+            from /main in kilowatt-hours. Contrast sh1EnergyValue/sh2EnergyValue, which are
+            kWh in both directions.
+        timeLimit:
+          type: string
+          description: >-
+            Time-limit VALUE in seconds (0..86399). A read-back of 500000 or more means
+            "not set".
+        moneyLimit:
+          type: string
+          description: >-
+            Cost-limit VALUE in whole currency units (integers only). A read-back above
+            20000 means "not set".
+        aiVoltage:
+          type: string
+          description: >-
+            Adaptive mode 1 under-voltage threshold (V). Valid range depends on minVoltage
+            and gridRange.
         systemTime:
           type: string
-          description: Set clock. Current generation = unix epoch (seconds, UTC).
+          description: >-
+            Set clock. Expects a TRUE UTC unix epoch (seconds) on write; the station adds
+            its own timeZone offset, so /main reads back local time. See API.md 4.3.
         rstEM1:
           type: string
           description: Reset internal energy meter 1
@@ -501,11 +612,59 @@ components:
           description: Plug temperature (°C)
         leakValue:
           type: integer
-          description: Earth-leakage current (mA)
+          description: Earth-leakage reading, low channel
         leakValueH:
           type: integer
+          description: >-
+            Earth-leakage reading, high channel. A second measurement channel, not a
+            threshold; on observed devices this is the one that goes non-zero.
         ground:
           type: integer
+          description: 1 = protective earth present; 0 is the fault condition
+        gridRange:
+          type: integer
+          description: >-
+            Grid voltage domain: 0 = 230 V family, 1 = 110 V family. On 1 the station
+            clamps all currents to 12 A.
+        timeMsg:
+          type: integer
+          description: >-
+            1 = the device clock is not usable (typically a flat RTC backup battery);
+            ignore systemTime when set.
+        aiModecurrent:
+          type: integer
+          description: >-
+            Current the adaptive algorithm is actually allowing right now. Only meaningful
+            while aiStatus != 0.
+        sessionStarted:
+          type: integer
+          description: >-
+            1 = a session is open. Distinguishes live session counters from leftover ones,
+            which keep their values after unplug until the next session starts.
+        logReady:
+          type: integer
+          description: >-
+            1 = session-log data is available. The key may be ABSENT entirely rather than 0
+            when idle.
+        model:
+          type: string
+          description: Device-reported model name, e.g. "EVEUS Pro 1P 2024". R3.05.x+
+        manufacturer:
+          type: string
+          description: Device-reported manufacturer name. R3.05.x+
+        switchState:
+          type: integer
+          description: >-
+            Read-back of a physical current-limit selector on the housing. R3.05.x+;
+            position-to-amperes mapping not established.
+        fixedMode:
+          type: integer
+          description: >-
+            Not configuration. Observed changing between polls minutes apart with no reboot;
+            treat as an internal/rolling value and do not surface it. R3.05.x+
+        ocppVendor:
+          type: integer
+          description: CSMS vendor quirk profile (0 = default). R3.05.x+
         vBat:
           type: number
           description: RTC backup battery (V)
@@ -536,11 +695,19 @@ components:
           type: number
         aiStatus:
           type: integer
-          description: "Adaptive mode: 0 off,1 voltage,2 tesla_auto,3 power"
+          description: >-
+            "Adaptive mode currently active: 0 off, 1 voltage, 2 auto, 3 power.
+            Write it under the different name aiMode."
         aiVoltage:
           type: integer
+          description: >-
+            Adaptive mode 1 under-voltage threshold (V) — stored configuration chosen by
+            the user, not a measurement.
         groundCtrl:
           type: integer
+          description: >-
+            Protective-earth MONITORING enable (1 = active). A service-level setting; safe
+            to read, but do not expose as a normal user control.
         oneCharge:
           type: integer
         suspendLimits:
@@ -611,8 +778,14 @@ components:
           description: Wi-Fi module firmware version (prefix 1PGRW=1-phase, 3PGRW=3-phase)
         verFWStatus:
           type: integer
+          description: >-
+            Firmware-integrity flag, not an API version: 0 makes the station's own web UI
+            render both version strings in red. Any other value = OK.
         systemTime:
-          description: "Current generation: unix epoch (seconds). Legacy: 'HH:MM:SS' string."
+          description: >-
+            "Current generation: unix epoch in LOCAL time (true epoch + timeZone*3600), so
+            decoding it as UTC yields a constant offset error. Writes expect a true UTC
+            epoch. Legacy: 'HH:MM:SS' wall-clock string. See API.md 4.3."
           oneOf:
             - type: integer
             - type: string

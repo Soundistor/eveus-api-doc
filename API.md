@@ -13,10 +13,12 @@ firmware releases. Verify against your own device before relying on anything her
 - Command bodies are `application/x-www-form-urlencoded`.
 - Responses are `application/json` (data endpoints) or plain text (config-save endpoints, returning an error string or empty on success).
 
-> Firmware covered: `1PGRW001A-R3.02.7` and `-R3.05.5` (single-phase),
-> `3PGRW001A-R3.05.6` (three-phase); response examples captured on R3.02.9.
+> Firmware covered: `1PGRW001A-R3.02.7`, `-R3.02.9` and `-R3.05.5` (single-phase),
+> `3PGRW001A-R3.05.6` (three-phase). The `/main` example below was captured on R3.02.9;
+> the R3.02.9 → R3.05.4/R3.05.5 differences in §1.x were measured on the **same physical
+> unit** before and after that update.
 > Example values come from real captures with serial numbers, IPs and any secrets
-> replaced by placeholders. §1.x lists what changed across these versions.
+> replaced by placeholders.
 
 ---
 
@@ -64,7 +66,7 @@ reported in `/main` and `/init`:
 |---|---|---|
 | `verFWWifi` | `1PGRW001A-R3.05.5` | Wi-Fi/comms module (the one exposing this HTTP API) |
 | `verFWMain` | `GRM070A-R3.05.4` | Power/status controller (metering, relay, safety) |
-| `verFWStatus` | `1` | Status-controller protocol/state flag |
+| `verFWStatus` | `1` | **Firmware-integrity flag**, not an API version: `0` makes the station's own web UI render both version strings in red. Any other value = OK |
 
 Wi-Fi firmware prefix encodes the phase count:
 
@@ -82,7 +84,7 @@ This matters far more than 1P vs 3P:
 |---|---|---|
 | `/main` size | ~37 fields | ~95+ fields |
 | Numeric units | **scaled integers** (see §6) | **floats in real units** |
-| `systemTime` | `"HH:MM:SS"` string | unix epoch (integer, UTC) |
+| `systemTime` | `"HH:MM:SS"` string | unix epoch (integer) — **local time, not UTC**, see §4.3 |
 | Charge state | `state` only (0–22) | `state` (0–7) **+** `subState` |
 | Calibration | `voltKoef*/curKoef*/freqKoef/leakKoef` | `kV*/kC*/kCl` (in `/init`/`/debug`) |
 | OCPP / tariffs / schedules | absent | present |
@@ -94,17 +96,20 @@ This matters far more than 1P vs 3P:
 
 ### There is no API-version field — key off the firmware version
 
-The firmware exposes **no explicit API-version parameter**. `verFWStatus` is a
-status-controller flag, not an API version. So identify the generation by the
+The firmware exposes **no explicit API-version parameter**. (`verFWStatus` looks like
+one but is a firmware-integrity flag — see §1.) So identify the generation by the
 **firmware version** and/or by feature-probing the `/main` response:
 
 - **By firmware:** anchor to `verFWWifi` / `verFWMain` (e.g. `1PGRW001A-R3.05.5`,
   `GRM070A-R3.05.4`). The current generation corresponds to the `?PGRW001A-R3.0x`
   Wi-Fi firmware family this document covers.
 - **By runtime probe (more robust across future releases):**
-  - `subState` present in `/main` → **current** generation.
+  - `verFWWifi` present in `/main` → **current** generation; absent → legacy. (Equivalent
+    probes: `subState` or `minCurrent` present → current.)
   - `systemTime` is a string (`"HH:MM:SS"`) → **legacy**; integer epoch → current.
   - `curMeas1` is a float → current; integer → legacy (scaled ×0.1).
+  - Calibration coefficients appear directly in `/main` (`voltKoef*`, `curKoef*`) → legacy;
+    on the current generation they live in `/init` / `/debug` instead.
 
 Prefer the runtime probe: it survives firmware version-string changes and doesn't
 require a lookup table of versions.
@@ -114,25 +119,29 @@ otherwise; §7 covers the legacy differences.
 
 ### 1.x Observed changes across current-generation firmware
 
-Differences observed between R3.02.x and R3.05.x releases (single-phase):
+Measured on **one physical single-phase unit captured before and after an
+R3.02.9 → R3.05.4/R3.05.5 update**, so the differences below are firmware changes, not
+model differences.
 
-| Area | R3.02.x | R3.05.x |
+| Area | R3.02.9 | R3.05.4 / R3.05.5 |
 |---|---|---|
-| Endpoint set | 12 endpoints | **identical** — 12 endpoints, no additions/removals |
-| `/main` schema | ~95 fields (matches this doc's example) | same fields + minor additions |
+| `/main` field count | 95 | **101–102** (see §3.1 — it also varies with device state) |
+| `/main` additions | — | `model`, `manufacturer`, `evseType`, `switchState`, `fixedMode`, `ocppVendor`, `aiAutoPercent`, `broadcastMode`, `displayOrientation` |
+| `/main` removals | `typeEvse`, `adapter` | — |
 | Hardware-type field | **`typeEvse`** | renamed to **`evseType`** |
-| `/config` body (Wi-Fi STA) | **single network** (`ssidName`, `ssidPassword`, `WifiMode`, `mac_bind`, `STA_MAC`) | **up to 3 networks** (`ssidName2/3`, static-IP & auto-connect per network — see §5.4) |
-| `broadcastMode` command | absent | present (broadcast/master mode) |
+| `/init` field count | 13 | **38** (the multi-network block) |
+| `/debug` field count | 42 | 42 — unchanged |
+| `/ocppData` | 20 fields, incl. `publicMode` | 19 — **`publicMode` removed** |
+| `/config` body (Wi-Fi STA) | **single network** (`ssidName`, `ssidPassword`, `WifiMode`, `mac_bind`, `STA_MAC`) | **up to 3 networks** (`ssidName2/3`, static-IP & auto-connect per network — see §5.5) |
+| `broadcastMode` | absent | present — soft-AP broadcast policy, see §5.1 |
 | OCPP `connectorID` param | present | removed / superseded |
 
 Practical takeaways for a client:
 - Accept **both** `typeEvse` and `evseType` (read whichever is present).
 - Don't assume `/config` echoes networks 2/3 on older firmware.
+- Don't add `publicMode` — it exists only on the older generation.
 - The core `/main` telemetry and the charge-control commands (`currentSet`,
   `evseEnabled`, `aiMode`, limits, schedules, tariffs) are stable across R3.02–R3.05.
-
-> The `/main` contract in this document was cross-checked across R3.02.x and
-> R3.05.x releases; the documented fields are consistent between them.
 
 ---
 
@@ -158,15 +167,33 @@ same paths, same request bodies, same response schema.
 | `POST /main` | Live status + full config snapshot | *(empty)* | JSON |
 | `POST /pageEvent` | Set a single parameter / fire a command | `name=value` | text (empty ok) |
 | `POST /init` | Full init dump (config incl. Wi-Fi/HTTP/OCPP) | *(empty)* | JSON |
-| `POST /config` | Save Wi-Fi station config (up to **3 networks**) | form (see §5.4) | text |
+| `POST /config` | Save Wi-Fi station config (up to **3 networks**) | form (see §5.5) | text |
 | `POST /configAP` | Save access-point (hotspot) config | form | text |
 | `POST /configHttp` | Save web login / password / auth key | form | text |
 | `POST /scan` | Start a Wi-Fi scan | *(empty)* | text |
 | `POST /scanResult` | Poll Wi-Fi scan results | *(empty)* | JSON array |
 | `POST /debug` | Diagnostic snapshot | *(empty)* | JSON |
-| `POST /get_logResult` | Retrieve device log | *(empty)* | JSON |
+| `POST /get_logResult` | Completed-session log (see §10.1) | *(empty)* | JSON array |
+| `POST /getLogData` | Event log (see §10.2) | *(empty)* | **CSV text** |
+| `POST /cleanLogData` | Erase the event log | *(empty)* | text |
 | `POST /ocppEvent` | Save OCPP settings / fire OCPP action | form | text |
 | `POST /ocppData` | OCPP status/data | *(empty)* | JSON |
+
+The firmware also registers OTA-update endpoints (`/update/*`, `/oldupdate/*`,
+`/updateEvent`) and serves the UI pages themselves (`/`, `/service`, `/ocppconfig`,
+`/log.html`). Those are outside the scope of this reference.
+
+### 3.1 The `/main` key set is not a stable contract
+
+Two things vary, so a client must tolerate missing keys rather than assume a fixed schema:
+
+- **By firmware version** — see §1.x.
+- **By device state** — `logReady` is present only while it is set: it appears while a
+  session is running and is **absent entirely** (not `0`) when idle. That alone accounts for
+  the 101-vs-102 field count on the same firmware.
+
+The station's own web UI guards every single field with a presence check and treats a missing
+optional flag as `0`. Do the same.
 
 ---
 
@@ -257,34 +284,58 @@ configuration. The station's own web UI polls this on an interval.
 | `voltMeas1` / `voltMeas2` / `voltMeas3` | V | Per-phase voltage. **1-phase: `voltMeas2/3` always 0** |
 | `powerMeas` | W | Active power |
 | `temperature1` / `temperature2` | °C | Box / plug temperatures |
-| `leakValue` | mA | Earth-leakage current |
-| `leakValueH` | mA | Leakage high-water threshold |
-| `ground` | 0/1 | Ground present |
+| `leakValue` | see note | Earth-leakage reading, **low** channel |
+| `leakValueH` | see note | Earth-leakage reading, **high** channel — a second measurement channel, *not* a threshold. On observed devices it is the one that goes non-zero |
+| `ground` | 0/1 | `1` = protective earth present (`0` is the fault condition) |
 | `vBat` | V | RTC backup battery |
 | `RSSI` | dBm | Wi-Fi signal (present in `/main`; the current UI reads it here) |
 | `sessionTime` | s | Current session duration |
 | `sessionEnergy` | kWh | Current session energy |
 | `sessionMoney` | currency | Current session cost |
 | `sessionStarted` | 0/1 | Session active flag |
-| `totalEnergy` | kWh | Lifetime energy |
-| `IEM1` / `IEM2` | kWh | Two independent internal energy meters |
+| `totalEnergy` | kWh | Lifetime energy. On observed devices **numerically identical to `IEM2`** — the same counter, except `IEM2` can be reset |
+| `IEM1` / `IEM2` | kWh | Two **user-resettable trip meters** over the same physical meter (`rstEM1` / `rstEM2`). They are *not* a split by energy source |
 | `IEM1_money` / `IEM2_money` | currency | Cost accumulated per meter |
-| `activeTarif` | int | Currently active tariff |
+| `activeTarif` | enum | Which rate is in force **right now**: `0` = primary (`tarif`), `1` = rate A (`tarifAValue`), `2` = rate B (`tarifBValue`). Read-only — the device chooses; there is no command to set it |
+
+> **Do not derive cost from energy or vice versa.** `sessionMoney` and `sessionEnergy` are
+> accumulated independently and are not guaranteed mutually consistent within a single
+> response; after a mid-session tariff switch their ratio matches neither rate.
 
 **Configuration echoed in `/main`** (writable via `/pageEvent`, see §5.2)
 
 | Field | Unit | Notes |
 |---|---|---|
-| `currentSet` | A | Charge current setpoint |
-| `curDesign` | A | Hardware max current |
-| `minCurrent` | A | Minimum current |
-| `minVoltage` | V | Under-voltage cutoff |
-| `aiStatus` | enum | Adaptive/AI mode, see §6.3 |
-| `aiVoltage` | V | AI reference voltage |
-| `groundCtrl` | 0/1 | Ground control enable |
-| `timeLimitS` / `energyLimitS` / `moneyLimitS` | s / kWh / currency | Session limit **setpoints** |
-| `timeLimit` / `energyLimit` / `moneyLimit` | — | Current limit state |
-| `delayedLimit` | — | Delayed-start limit |
+| `currentSet` | A | Charge current setpoint. **Absolute value, applied immediately — there is no ramp/slew primitive in the API** |
+| `curDesign` | A | Hardware max current — the upper bound for `currentSet` |
+| `minCurrent` | A | Station minimum — the lower bound for `currentSet`. Read it rather than assuming a constant: it differed (7 → 6) between firmware releases on the same unit |
+| `gridRange` | enum | Grid voltage domain: `0` = 230 V family, `1` = 110 V family. ⚠️ On `1` the station **clamps all currents to 12 A** and the voltage ranges shift |
+| `minVoltage` | V | Under-voltage cutoff. Valid values are a closed set that depends on `gridRange` |
+| `aiStatus` | enum | Adaptive mode currently active, see §6.3. ⚠️ Written under a **different name**, `aiMode` |
+| `aiVoltage` | V | Adaptive mode 1 under-voltage **threshold** — stored configuration chosen by the user, not a measurement. Range: min = `minVoltage + 10`, max = 220 (or 110 when `gridRange == 1`) |
+| `aiModecurrent` | A | The current the adaptive algorithm is **actually allowing** right now; the UI shows it as "allowed / requested" next to `currentSet`. Only meaningful while `aiStatus != 0` |
+| `aiVoltageStart` | V | Voltage captured at charge start, used as the adaptive-Auto reference (`0` when idle) |
+| `aiVoltageDrop` | % | Adaptive-Auto drop from `aiVoltageStart` (`0` when idle) |
+| `aiPowerDrop` | W | Adaptive-Power measured power drop |
+| `aiAutoPercent` | % | Stored adaptive-Auto set-point. Present from R3.05.x; no command writes it |
+| `groundCtrl` | 0/1 | Protective-earth **monitoring** enable (`1` = PE control active). ⚠️ A service-level setting — see the warning in §5.2 |
+| `switchState` | int | Read-back of a physical current-limit selector on the housing. Present from R3.05.x; the mapping from position to amperes is not established |
+| `timeMsg` | 0/1 | `1` = **the device clock is not usable** (typically a flat RTC backup battery, cf. `vBat`). When set, ignore `systemTime` |
+| `scanComplete` | 0/1 | `1` = a Wi-Fi scan has finished; fetch `/scanResult` once |
+| `logReady` | 0/1 | `1` = session-log data is available (`/get_logResult`). **Key may be absent entirely** — see §3.1 |
+| `displayOrientation` | 0/1 | Rotate the on-device display 180°. R3.05.x+ |
+| `broadcastMode` | 0/1/2 | Soft-AP broadcast policy, see §5.1. R3.05.x+ |
+| `model` / `manufacturer` | string | Device-reported names, e.g. `"EVEUS Pro 1P 2024"` / `"EVEUS"`. R3.05.x+ — absent on older firmware |
+| `fixedMode` | int | ⚠️ **Not configuration.** Observed changing between polls minutes apart with no reboot, and mirrored in `/init`. Treat as an internal/rolling value and do not surface it. R3.05.x+ |
+| `ocppVendor` | int | CSMS vendor quirk profile (`0` = default). R3.05.x+ |
+| `sessionStarted` | 0/1 | A session is open. This is what distinguishes live session counters from leftover ones — they keep their values after unplug until the next session begins |
+| `STA_IP_Addres` | string | Station IP on the LAN. **Spelling is the firmware's** (one `s`) |
+| `serialNumCPU` | string | Legacy controller serial; empty when not provisioned |
+| `SNflag` | enum | Status of the last serial-number registration attempt against the vendor cloud (`0` = never attempted) |
+| `rfData` | int | Revision counter for the identity block — when it changes, re-read identity fields. Not RFID |
+| `timeLimitS` / `energyLimitS` / `moneyLimitS` | 0/1 | Limit **enable flags** — the `S` suffix is a *state/switch*, not a setpoint |
+| `timeLimit` / `energyLimit` / `moneyLimit` | s / kWh / currency | Limit **values**. ⚠️ Units and sentinels are not uniform — see §5.4 before writing these |
+| `delayedLimit` | 0/1 | "Special limit signal" — changes how a limit/schedule stop is signalled; not a limit itself |
 | `oneCharge` | 0/1 | One-shot charge |
 | `suspendLimits` / `suspendErrors` | 0/1 | Temporarily ignore limits / errors |
 | `tarif`, `tarifAEnable/AValue/AStart/AStop`, `tarifB…` | — | Two-tariff pricing schedule |
@@ -308,6 +359,27 @@ configuration. The station's own web UI polls this on an interval.
 | `ocppEnabled` | OCPP client enabled |
 | `ocppconnected` | Connected to central system |
 | `ocppOfflineAva` | Offline-availability flag |
+
+⚠️ **While OCPP is connected and driving a charging profile, a local `currentSet` write is
+ignored.** Since the station answers with HTTP 200 either way (§5), these three fields are the
+only way a client can tell that its setpoint is being overridden. The matching `subState` is
+`9` (§6.2).
+
+### 4.3 `systemTime` is a **local**-time epoch, not UTC
+
+This is the single easiest thing to get wrong, and the direction differs per operation:
+
+- **Reading** `/main.systemTime` gives `unix_epoch + timeZone*3600` — i.e. an epoch whose UTC
+  rendering equals the station's **local wall clock**. Decoding it as UTC and comparing it
+  against real UTC yields a constant error equal to the configured offset.
+- **Writing** `systemTime` expects a **true UTC epoch**; the station applies `timeZone`
+  itself. (The station's own web UI writes `Date.now()/1000` and does so on *every* page load,
+  so opening the web UI re-syncs the clock from the browser.)
+- `timeZone` is a separate signed integer in **whole hours**, accepted in the range −12…+12.
+- If `timeMsg == 1`, the clock is not usable at all and `systemTime` should be ignored.
+
+On the legacy generation `systemTime` is a `"HH:MM:SS"` wall-clock string with no date and no
+timezone.
 
 ---
 
@@ -334,30 +406,71 @@ curl -s -u USER:PASS -X POST \
   http://CHARGER_IP/pageEvent
 ```
 
-Several parameters can be sent at once as an `&`-joined body (the UI's
-`postPageEventSeveral`), e.g. `sh1Start=1380&sh1Stop=360&sh1Enabled=1`.
+**The `pageEvent` header is optional.** The parameter name is taken from the **body**; the
+header merely repeats it. Requests without it are accepted, and the station's own bulk writes
+omit it. Several parameters can be sent at once as an `&`-joined body, e.g.
+`sh1Start=1380&sh1Stop=360&sh1Enabled=1`.
+
+### 5.0 Response handling — HTTP 200 does not mean success
+
+There is **no JSON error envelope and no error-code field**. Application-level rejections come
+back as **HTTP 200 with a plain-text body**, so a rejected write is indistinguishable from an
+accepted one unless you read the body:
+
+| Body | Meaning |
+|---|---|
+| `mainPost successfully` | accepted |
+| `ILLEGAL_CMD` | unknown parameter name, or the controller rejected the command |
+| `Failed to post control value` | the value could not be handed to the charge controller |
+| `content too long` | request body too large (see limits below) |
+| `Error: already started` | start command while a session is already running |
+
+The only status codes the vendor code sets itself are `200`, `302` (UI route redirects) and
+`401`. Everything else (`400`, `404`, `405`, `500`, …) comes from the underlying HTTP server.
+
+**Practical limits and behaviour, worth designing around:**
+
+- **Request body limit is 511 bytes** on `/pageEvent` and the other form endpoints; exceeding
+  it returns `content too long`.
+- **The station serves one HTTP connection at a time**, and a new connection causes the
+  existing session to be closed rather than queued. Concurrent requests therefore abort each
+  other — serialise all requests to the device, and do not rely on keep-alive sockets staying
+  usable while anything else (for example an open web UI, which polls once per second) is
+  talking to the charger.
+- A write reaches the charge controller asynchronously. Allow roughly **two poll cycles**
+  before reading a value back — the station's own UI discards the next 2 `/main` responses
+  after every write. Do not treat an immediate read-back as authoritative.
+- Reads of `/main` are served from cached values and do not themselves query the charge
+  controller, so a successful response proves the comms module is alive, not that the data is
+  fresh. `systemTime` failing to advance between polls is a cheap staleness check.
 
 ### 5.1 Common controls
 
 | Command | Values | Effect |
 |---|---|---|
-| `currentSet` | min…`curDesign` (A) | Charge current. UI sends 2-digit zero-padded (`08`) |
-| `evseEnabled` | 0/1 | Enable/disable charging (**current generation: 0=on, 1=off**) |
-| `oneCharge` | 0/1 | One-shot charge for current session |
-| `chargeNow` | 0/1 | Force charge now (override limits) |
-| `aiMode` | 0/1/2/3 | Adaptive mode, see §6.3 |
-| `broadcastMode` | 0/1 | Broadcast/master mode |
+| `currentSet` | `minCurrent`…`curDesign` (A) | Charge current. UI sends 2-digit zero-padded (`08`) |
+| `evseEnabled` | 0/1 | **`1` = stop charging, `0` = charging permitted** on the current generation. The station's own UI labels this switch "Stop charging". Legacy generation is inverted |
+| `oneCharge` | 0/1 | Bypass the session limits for one charge. Write the camelCase name |
+| `chargeNow` | `0` | **Clears every limit and schedule enable flag** — a reset command rather than a "start" command. The station's own UI always sends `0` |
+| `aiMode` | 0/1/2/3 | Adaptive mode, see §6.3. Read back as `aiStatus` |
+| `broadcastMode` | 0/1/2 | Soft-AP broadcast policy: `0` = always on, `1` = off once connected, `2` = always off. Other values are rejected with `Wrong Mode. Use 0, 1 or 2.` |
+| `rstEM1` / `rstEM2` | *(no value)* | Reset trip meter A / B. The UI sends these with no value at all. ⚠️ `rstEM2` also zeroes `totalEnergy` on observed devices |
 
 ### 5.2 Full command list (49 commands, identical on 1P & 3P)
 
 Charging / current: `currentSet`, `minCurrent`, `curDesign`, `evseEnabled`,
 `oneCharge`, `chargeNow`, `aiMode`, `broadcastMode`
 
-Session limits: `energyLimitS`, `timeLimitS`(*), `moneyLimitS`(*), `delayedLimit`,
-`suspendLimits`, `suspendErrors`
+Session limits — **enable flags**: `timeLimitS`, `energyLimitS`, `moneyLimitS`;
+**values**: `timeLimit`, `energyLimit`, `moneyLimit` (units differ — see §5.4);
+bypasses: `suspendLimits`, `oneCharge`; other: `delayedLimit`, `suspendErrors`
 
-Tariffs: `tarif`, `tarifAValue`, `tarifAEnable`, `tarifAStart`,
-`tarifBValue`, `tarifBEnable`, `tarifBStart`, `tarifBStop`
+Tariffs: `tarif`, `tarifAEnable`, `tarifAValue`, `tarifAStart`, `tarifAStop`,
+`tarifBEnable`, `tarifBValue`, `tarifBStart`, `tarifBStop`
+
+Adaptive mode: `aiMode`, `aiVoltage`
+
+Display: `displayOrientation`
 
 Schedule 1: `sh1Enabled`, `sh1Start`, `sh1Stop`, `sh1CurrentEnable`,
 `sh1CurrentValue`, `sh1EnergyEnable`, `sh1EnergyValue`
@@ -369,16 +482,17 @@ Meters / reset: `rstEM1`, `rstEM2` (reset internal meters), `factoryReset`
 
 Clock / locale: `systemTime` (unix epoch on current generation), `timeZone`, `timerType`, `lang`
 
-UI/nav: `pageOpen`, `pageevent`
+UI/nav: `pageOpen` (sent once as `pageOpen=1` after `/init`; optional telemetry, not a
+handshake — no endpoint requires it first)
 
-⚠️ **Hardware / calibration — do not send unless you know exactly what you are
-doing; wrong values can damage metering or hardware:**
-`kC1`, `kC2`, `kC3`, `kCl`, `kV1`, `kV3` (current generation 3-phase also `kV2`),
-`evseType`, `typeRelay`, `groundCtrl`, `minVoltage`, `curDesign`, `Cmax`,
-`factoryReset`
+⚠️ **Hardware / calibration / service — do not send unless you know exactly what you are
+doing; wrong values can damage metering, defeat protections, or create a hazard:**
+`kC1`, `kC2`, `kC3`, `kCl`, `kV1`, `kV2`, `kV3`, `evseType`, `typeRelay`, `minVoltage`,
+`curDesign`, `minCurrent`, `Cmax`, `suspendErrors`, `factoryReset`.
 
-(*) `timeLimitS`/`moneyLimitS` are present in `/main` and the UI; the exact
-`pageEvent` key spelling should be confirmed against `/init` on your firmware.
+⚠️ `groundCtrl` belongs in that list too: it enables/disables **protective-earth
+monitoring**, and on the station it is reachable only from the service page. It is safe to
+*read*; do not offer it as a normal user control.
 
 ### 5.3 Schedule fields
 
@@ -387,14 +501,46 @@ Each of the two schedules (`sh1*`, `sh2*`):
 | Suffix | Meaning |
 |---|---|
 | `Enabled` | schedule on/off |
-| `Start` / `Stop` | window start/stop (minutes since midnight) |
-| `CurrentEnable` + `CurrentValue` | cap current during window (A) |
-| `EnergyEnable` + `EnergyValue` | stop at energy limit (kWh) |
+| `Start` / `Stop` | window start/stop (**minutes since midnight**, 0…1439) |
+| `CurrentEnable` + `CurrentValue` | cap current during window (A) — same bounds as `currentSet` |
+| `EnergyEnable` + `EnergyValue` | stop at energy limit (**kWh**, both directions) |
+
+- Windows **wrap around midnight** (`Stop < Start` is the shipped default), and
+  `Start == Stop` behaves as "always active".
+- Resolution is one minute; there is no seconds component.
+- An active schedule window can block charging **even when `suspendLimits` is set** — that
+  bypass applies only to the time/energy/cost limits.
 
 > `sh*EnergyValue`/`sh*EnergyEnable` exist since at least R3.02.9; R3.05.x fixed
 > their behaviour (per vendor release notes). The fields themselves are not new.
 
-### 5.4 Wi-Fi station config — `POST /config` (up to 3 networks)
+### 5.4 Limit units and sentinel values ⚠️
+
+The limits do **not** share a unit convention, and two of them use magic read-back values that
+mean "not set". Getting this wrong silently produces the wrong limit.
+
+| Parameter | Unit on **write** | Unit on **read** | "Not set" sentinel |
+|---|---|---|---|
+| `timeLimit` | seconds (0…86399) | seconds | read-back **≥ 500000** → treat as unset/0 |
+| `energyLimit` | **watt-hours** — multiply kWh by 1000 | **kilowatt-hours**, clamped to 200 | none (clamped, not sentinelled) |
+| `moneyLimit` | whole currency units (integer; fractional limits are not possible) | currency | read-back **> 20000** → treat as unset |
+| `sh1EnergyValue` / `sh2EnergyValue` | **kilowatt-hours** | kilowatt-hours | none |
+
+So `energyLimit` and `sh*EnergyValue` express the same physical quantity in **different units**
+within the same API: `energyLimit=5000` sets 5 kWh and reads back as `5`, while
+`sh1EnergyValue=5` sets 5 kWh directly.
+
+Also note:
+
+- The **enable flag and the value are two separate writes** — there is no atomic "set and
+  enable".
+- `suspendLimits=1` bypasses the three limits above; `oneCharge=1` does so for a single
+  session. Neither bypasses a schedule.
+- Tariff values (`tarif`, `tarifAValue`, `tarifBValue`) are **hundredths of a currency unit per
+  kWh** — `513` means 5.13/kWh. Tariff window times use the same minutes-since-midnight
+  encoding as schedules.
+
+### 5.5 Wi-Fi station config — `POST /config` (up to 3 networks)
 
 The current firmware supports three saved Wi-Fi networks. Body (form-urlencoded):
 
@@ -412,13 +558,13 @@ ssidName3, ssidPassword3,      mac_bind3, STA_MAC3, auto_conn3, stat_ip_s3, stat
 > is R3.05.x. R3.02.x accepted a single network only:
 > `ssidName`, `ssidPassword`, `ssidPasswordConf`, `WifiMode`, `mac_bind`, `STA_MAC`.
 
-### 5.5 Access point — `POST /configAP`
+### 5.6 Access point — `POST /configAP`
 
 ```
 ssidNameAP, ssidPasswordAP, ssidPasswordAPConf
 ```
 
-### 5.6 Web credentials — `POST /configHttp`
+### 5.7 Web credentials — `POST /configHttp`
 
 ```
 httpUsername, httpPassword, httpPasswordConf, authenticationKey
@@ -443,7 +589,7 @@ Returns a non-empty text body on error, empty on success.
 | 3 | connected |
 | 4 | charging |
 | 5 | charge_complete |
-| 6 | paused |
+| 6 | disabled — entered when `evseEnabled` is set to stop (the firmware's own label is "Disabled") |
 | 7 | error (see `subState` §6.2) |
 
 ### 6.2 `subState` (current generation)
@@ -468,18 +614,29 @@ Otherwise (**limit / status codes**):
 | 0 | no_limits | | 6 | schedule1_energy_limit |
 | 1 | limited_by_user | | 7 | schedule2_limit |
 | 2 | energy_limit | | 8 | schedule2_energy_limit |
-| 3 | time_limit | | 9 | waiting_for_activation |
+| 3 | time_limit | | 9 | **external_limit** |
 | 4 | cost_limit | | 10 | paused_by_adaptive_mode |
 | 5 | schedule1_limit | | | |
 
+> **Code 9 (`external_limit`)** means current is being commanded from outside — OCPP or a
+> vendor app. The station's own display renders it as *"App control is active"*. Note that some
+> firmware translations render this string as "waiting for activation", which reads as the
+> opposite of what it means. Code 10 means the adaptive algorithm is throttling — adaptive mode
+> reduces current but never stops charging.
+
 ### 6.3 `aiStatus` / `aiMode`
 
-| # | Meaning |
-|---|---|
-| 0 | off |
-| 1 | voltage (adaptive by grid voltage) |
-| 2 | tesla_auto |
-| 3 | power (adaptive by power) |
+Read the active mode from `aiStatus`; **write it as `aiMode`** — the read and write names differ.
+
+| # | Firmware label | Meaning |
+|---|---|---|
+| 0 | — | off |
+| 1 | Voltage | reduce current when grid voltage drops below the `aiVoltage` threshold |
+| 2 | **Auto** | reduce current by percentage as voltage sags relative to `aiVoltageStart`. The station documents the ladder as: −6 % → current −20 %, −8 % → −30 %, −10 % → current = `minCurrent`. (Sometimes labelled "Tesla auto" by third-party clients; the firmware calls it simply "Auto" and nothing about it is vehicle-specific.) |
+| 3 | Power | reduce current on measured power drop (`aiPowerDrop`, compared against a fixed 200 W) |
+
+Adaptive mode only ever **lowers** the current; it never stops charging. The effective value it
+allows is reported in `aiModecurrent`.
 
 ---
 
@@ -535,9 +692,14 @@ Key differences vs the current generation:
 | Phase voltage `voltMeasN` | integer V | integer V |
 | Power `powerMeas` | (compute V×I) | integer W |
 | Session/total energy | integer ×0.1 → kWh (`63` = 6.3 kWh) | float kWh (`16.01`) |
-| `systemTime` | `"HH:MM:SS"` string | unix epoch (UTC, seconds) |
-| Temperatures | integer °C (`-60` = absent) | integer °C |
+| `systemTime` | `"HH:MM:SS"` string | unix epoch, **local time** — read `+ timeZone*3600`, write true UTC (§4.3) |
+| Temperatures | integer °C | integer °C. **Any reading below −50 means "sensor absent"** (`-60` is the common value) — applies to both generations |
 | `sessionTime` | seconds | seconds |
+| `timeLimit` | seconds | seconds (sentinel ≥ 500000 = unset) |
+| `energyLimit` | — | **Wh on write, kWh on read** (§5.4) |
+| `sh*EnergyValue` | — | kWh both directions (§5.4) |
+| Schedule / tariff times | — | minutes since midnight, 0…1439 |
+| `tarif`, `tarifAValue`, `tarifBValue` | — | hundredths of a currency unit per kWh (`513` = 5.13) |
 
 ---
 
@@ -547,9 +709,11 @@ Key differences vs the current generation:
 `/main` JSON schema. Firmware `1PGRW*` and `3PGRW*` differ only in:
 
 1. **Runtime values** — on 3-phase units `curMeas2/3` and `voltMeas2/3` carry real
-   readings; on single-phase units they are always `0`.
-2. **Calibration** — 3-phase firmware adds per-phase calibration coefficients
-   (`kV2/kV3`, `kC2/kC3`) used by config/debug endpoints, not `/main`.
+   readings; on single-phase units they are always `0`. The same applies to the per-phase
+   entries in `/debug`.
+2. **Calibration** — the per-phase coefficients (`kV1..kV3`, `kC1..kC3`, `kCl`) are exposed via
+   `/debug` on **both** variants, including single-phase units, where the phase-2/3 entries are
+   simply unused. They never appear in `/main` on the current generation.
 
 A consumer written against single-phase will work unchanged on three-phase; it
 only needs to start reading `curMeas2/3` / `voltMeas2/3` to expose the extra phases.
@@ -563,9 +727,62 @@ only needs to start reading `curMeas2/3` / `voltMeas2/3` to expose the extra pha
   `authenticationKey`. Used by the UI to populate settings pages.
 - **`POST /scan`** then **`POST /scanResult`** — start a Wi-Fi scan, then poll.
   `/scanResult` returns an array: `[{ "name": "<ssid>", "rssi": -62, "mac": "aa:bb:…" }, …]`.
-- **`POST /debug`** — diagnostic JSON (`dataDebug`): calibration trims (`tr_*`),
-  action flags (`a_*`), CP diagnostics (`cp_*`), etc.
-- **`POST /get_logResult`** — device log as JSON.
+- **`POST /debug`** — diagnostic JSON: raw ADC readings, calibration coefficients (`k*`),
+  protection trip thresholds (`tr_*`), and interlock flags (`a_*`). The `tr_*` values are the
+  actual cut-out points behind the error codes in §6.2 — for example under/over-voltage,
+  over-current, over-temperature and the two leakage channels. ⚠️ The `a_*` flags **disable**
+  individual protections (GFCI self-test, relay test, diode control, the housing current-limit
+  selector); read them if useful, but do not write them.
+
+### 10.1 `POST /get_logResult` — completed-session log
+
+Returns a **JSON array, newest first**, of per-session summary records:
+
+| Field | Meaning |
+|---|---|
+| `log_mnth`, `log_dd`, `log_hh`, `log_mm`, `log_sec` | session **start** timestamp, by the device clock |
+| `s_hh`, `s_mm`, `s_sec` | session duration |
+| `s_enrg` | energy, kWh |
+| `s_cost` | cost, currency |
+
+Four properties matter to a consumer, all observed on real devices:
+
+1. **The ring holds 4 records** — a fifth session evicts the oldest.
+2. **The newest record is the session in progress and updates live** — its duration, energy and
+   cost track the corresponding `/main` values. It only becomes final once the next session
+   pushes it down the list. Do not read record 0 as "the last completed session".
+3. **The timestamp is the session start**, frozen at whatever the device clock read at that
+   moment and **never corrected afterwards**. If the clock is subsequently adjusted (via SNTP,
+   or by anyone opening the web UI), records stop being monotonic — a record can even carry a
+   timestamp ahead of the current clock.
+4. **There is no year field.** The consumer must infer it, which is ambiguous across a New Year
+   boundary.
+
+Records persist across reboots and firmware updates. There is no parameter to page, filter or
+delete them.
+
+### 10.2 `POST /getLogData` — event log (CSV)
+
+Returns **CSV text**, not JSON, with this header:
+
+```
+TS,Src,Evt,cId,Data0,Data1,Data2,v1,v2,v3,c1,c2,c3,power,energy
+```
+
+- `TS` is `%Y-%m-%dT%H:%M:%S` — **this log does carry the year**, unlike `/get_logResult`.
+  `0000-00-00T00:00:00` appears when the clock is invalid.
+- `Src` is a subsystem tag (`EVSE`, `OCPPC`, `SERVE`, `DISPL`, `STM`, `NVS`, `OTA`, …).
+- `Evt` is an event name (`Power on`, `Restart`, `Connected`, `DisConnected`, `StateUpdate`,
+  `StartTransaction`, `StopTransaction`, `MeterValues`, `SetChargingProfile`, `OfflineMode`, …).
+
+This is an **event** log with instantaneous power/energy columns — it has no per-session
+summary, so reconstructing a session means pairing start/stop events yourself. It is also what
+OCPP `GetDiagnostics` uploads.
+
+**`POST /cleanLogData`** erases this event log (replies `clan logs successfully` / `clan logs
+error` — the typo is the firmware's). It takes no parameters and no confirmation token.
+
+There is **no pagination** on any of the log endpoints; all three are parameterless POSTs.
 - **`POST /ocppEvent`** — save OCPP config (`ocppEnabled`, `urlUrl`, `urlPort`,
   `urlPath`, `authenticationKey`). **`POST /ocppData`** — OCPP status/data.
   Default central-system host observed in UI: `ocpp.unitedchargers.com`.
