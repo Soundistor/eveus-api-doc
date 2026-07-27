@@ -419,11 +419,17 @@ accepted one unless you read the body:
 
 | Body | Meaning |
 |---|---|
-| `mainPost successfully` | accepted |
+| `OK` | accepted — confirmed on a live device (`/pageEvent`, R3.05.4/5); treat this as the success body, not the string below |
 | `ILLEGAL_CMD` | unknown parameter name, or the controller rejected the command |
 | `Failed to post control value` | the value could not be handed to the charge controller |
 | `content too long` | request body too large (see limits below) |
 | `Error: already started` | start command while a session is already running |
+
+`mainPost successfully` also exists in the firmware binary and was previously documented here as
+the success body, based on static string analysis. A live test showed the actual response is the
+bare string `OK` instead — the binary contains both strings, but only tracing execution (not
+string extraction) can tell which endpoint emits which. Treat any success-body claim not backed by
+a live capture as a hypothesis.
 
 The only status codes the vendor code sets itself are `200`, `302` (UI route redirects) and
 `401`. Everything else (`400`, `404`, `405`, `500`, …) comes from the underlying HTTP server.

@@ -87,8 +87,11 @@ paths:
 
         ⚠️ **HTTP 200 does not mean success.** Application-level rejections are
         returned as 200 with a plain-text body (`ILLEGAL_CMD`,
-        `Failed to post control value`, `content too long`). Success is
-        `mainPost successfully`. Inspect the body, not just the status.
+        `Failed to post control value`, `content too long`). Success is the bare
+        string `OK`, confirmed on a live device — an earlier version of this spec
+        named `mainPost successfully` based on static string analysis, but that
+        string was never observed on the wire. Inspect the body, not just the
+        status.
 
         The station serves **one connection at a time** and closes the existing
         session when a new one arrives, so requests must be serialised. Allow about
