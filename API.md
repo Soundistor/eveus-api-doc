@@ -162,6 +162,11 @@ username/password (see below).
 All endpoints are **identical between single-phase and three-phase firmware** —
 same paths, same request bodies, same response schema.
 
+> **This table is the current generation.** On legacy units only `/main`, `/pageEvent`, `/init`,
+> `/config`, `/scan` and a legacy-only **`POST /timer`** (the schedule, §7.6) exist. Everything else
+> below — `/debug`, `/ocppData`, `/ocppEvent`, `/get_logResult`, `/getLogData`, `/ocppconfig` — is
+> absent and answers **HTTP 302 with an empty body** rather than `404`. See §7.9.
+
 | Endpoint | Purpose | Request body | Response |
 |---|---|---|---|
 | `POST /main` | Live status + full config snapshot | *(empty)* | JSON |
@@ -413,6 +418,11 @@ omit it. Several parameters can be sent at once as an `&`-joined body, e.g.
 
 ### 5.0 Response handling — HTTP 200 does not mean success
 
+> **Current generation only.** On the **legacy** generation every write answers HTTP 200,
+> `text/plain`, with a **zero-length body** — whether it was accepted or not — so the bodies below do
+> not exist there and success cannot be detected from the response at all. See §7.2 and the write
+> contract in §7. Do not implement "body != OK means rejected" generically: it fails every legacy write.
+
 There is **no JSON error envelope and no error-code field**. Application-level rejections come
 back as **HTTP 200 with a plain-text body**, so a rejected write is indistinguishable from an
 accepted one unless you read the body:
@@ -464,6 +474,10 @@ The only status codes the vendor code sets itself are `200`, `302` (UI route red
 
 ### 5.2 Full command list (49 commands, identical on 1P & 3P)
 
+> **Current generation only.** The legacy generation accepts a different, smaller set — but more than
+> just `currentSet`/`evseEnabled`, which is what earlier versions of this document implied. See §7.2
+> for the measured legacy list, and note that its schedule is on `POST /timer` (§7.6), not here.
+
 Charging / current: `currentSet`, `minCurrent`, `curDesign`, `evseEnabled`,
 `oneCharge`, `chargeNow`, `aiMode`, `broadcastMode`
 
@@ -486,7 +500,8 @@ Schedule 2: `sh2Enabled`, `sh2Start`, `sh2Stop`, `sh2CurrentEnable`,
 
 Meters / reset: `rstEM1`, `rstEM2` (reset internal meters), `factoryReset`
 
-Clock / locale: `systemTime` (unix epoch on current generation), `timeZone`, `timerType`, `lang`
+Clock / locale: `systemTime` (unix epoch on current generation), `timeZone`,
+`timerType` (⚠️ the value meanings are **inverted** between generations — §7.3), `lang`
 
 UI/nav: `pageOpen` (sent once as `pageOpen=1` after `/init`; optional telemetry, not a
 handshake — no endpoint requires it first)
@@ -524,6 +539,10 @@ Each of the two schedules (`sh1*`, `sh2*`):
 
 The limits do **not** share a unit convention, and two of them use magic read-back values that
 mean "not set". Getting this wrong silently produces the wrong limit.
+
+> **Current generation only.** Legacy units use different units (`energyLimit` is 0.1 kWh in **both**
+> directions, not Wh-on-write) and have no cost limit at all. They also latch a tripped limit in a way
+> that a read-back does not reveal. See §7.4 before writing any limit to a legacy unit.
 
 | Parameter | Unit on **write** | Unit on **read** | "Not set" sentinel |
 |---|---|---|---|
@@ -584,6 +603,10 @@ Returns a non-empty text body on error, empty on success.
 
 > Enum meanings are community-contributed and best-effort. Confirm against your
 > own device before depending on a specific code.
+>
+> **These are the current-generation enums.** The legacy generation has its own `state` enum (§7.1),
+> no `subState` at all, and an **inverted** `timerType` (§7.3). Do not carry any enum in this section
+> across generations.
 
 ### 6.1 `state` (current generation)
 
@@ -672,21 +695,208 @@ Older units expose a smaller, differently-scaled `/main`. Example (sanitised):
 Key differences vs the current generation:
 
 - **`evseEnabled`: 1 = charging enabled, 0 = disabled** (opposite of current generation).
-- **`state`** uses a wider 0–22 enum (states *and* error/limit reasons combined):
-  0 no_data · 1 ready · 2 waiting · 3–6 charging · 7 current_leak · 8 cpu_error ·
-  9 no_ground · 10 overheat_plug · 11 overheat_relay · 12 overcurrent ·
-  13 overvoltage · 14 undervoltage · 15 limited_by_time · 16 limited_by_energy ·
-  17 limited_by_money · 18 limited_by_schedule1 · 19 limited_by_schedule2 ·
-  20 disabled_by_user · 21 relay_stuck · 22 limited_by_ai_mode.
-  There is **no** `subState`.
+- **`state`** is a different enum — see §7.1. There is **no** `subState`.
 - **Scaled integers** (see §8): current in 0.1 A, energy in 0.1 kWh.
-- `systemTime` is a `"HH:MM:SS"` string, not a unix epoch.
-- `temperature2 == -60` is a common "sensor absent / not connected" sentinel.
-- No OCPP, tariffs, schedules, or `IEM*` meters.
+- `systemTime` is a `"HH:MM:SS"` string on read, not a unix epoch — see §7.5.
+- `temperature2 < -50` (commonly `-60`) means "sensor absent"; the station's own UI prints `N/A`.
+- No OCPP, no cost limit, no tariffs, no `IEM*` meters, no `sh1*`/`sh2*` schedules — but there **is**
+  a schedule, on its own endpoint (§7.6).
+- No `powerMeas`: the station does not report power at all. Its own UI computes
+  `(V1·I1 + V2·I2 + V3·I3)/1000` kW client-side. Derive it the same way.
+- No `minCurrent`, no `verFW*`, no serial number of any kind. The slider minimum in the station's
+  own UI is hard-coded to **7 A**.
+- `typeEvse == 3` means three-phase; the station's UI hides phases 2/3 otherwise.
 - Calibration exposed as `voltKoef*/curKoef*/freqKoef/leakKoef`.
+- The `/main` key set is **36 keys and did not vary** across plugged/unplugged/charging states on
+  this firmware — unlike the current generation (§3.1), where `logReady` comes and goes.
+- Session counters **survive the end of a session and the unplug**: `sessionEnergy`/`sessionTime`
+  stay frozen at the last session's totals until a new session starts, which resets them. That makes
+  them a usable "last session" source, and it is also the trigger for the limit trap in §7.4.
 
-`/pageEvent` on legacy generation accepts at least `currentSet` (zero-padded 2-digit) and
-`evseEnabled`; the richer command set is current-generation only.
+### 7.1 `state` enum (legacy) — ⚠️ corrected 2026-08-14
+
+> **Errata.** Every version of this document before 2026-08-14 published a **different and incorrect**
+> `state` enum for the legacy generation — `1 ready · 2 waiting · 3–6 charging · 7 current_leak ·
+> 8 cpu_error · 9 no_ground · 10 overheat_plug · 11 overheat_relay · 12 overcurrent · 13 overvoltage ·
+> 14 undervoltage · 15–19 limited_by_* · 20 disabled_by_user · 21 relay_stuck · 22 limited_by_ai_mode`.
+> That table did not come from a legacy unit: it was inherited from a third-party
+> current-generation HA config and applied to the wrong generation. It agrees with the real enum on
+> only two codes, `0` and `6`.
+>
+> **If you copied it, the practical damage is inverted states, not just wrong labels**: a car sitting
+> plugged in reports `9`, which the old table called `no_ground`, and an unplugged station reports
+> `12`, which it called `overcurrent`. Anything automating on those names has been reacting to faults
+> that were not happening. Please re-check against the table below.
+
+The authoritative enum, taken from the `switch (e.state)` in the station's own web UI and confirmed
+by live measurement on a legacy unit (2026-07-30):
+
+| Code | Meaning |
+|---|---|
+| 0 | no data |
+| 6 | charging |
+| 9 | waiting (car connected, not charging) |
+| 12 | ready (nothing connected) |
+| 13 | delayed start |
+| 14 | overcurrent |
+| 15 | overvoltage |
+| 16 | current leak |
+| 17 | station error |
+| 18 | overtemperature |
+| 19 | locked |
+| 20 | no ground |
+| 21 | plug overheat |
+| 22 | undervoltage |
+
+Codes `1`–`5`, `7`, `8`, `10`, `11` are **not in this enum at all** — treat them as unknown rather
+than guessing a meaning. The station's own client additionally discards any frame with `state > 50`.
+
+Two independent confirmations: measured live (plugged-in → `9`, unplugged → `12`, each held for a
+minute of samples), and the independent `evse_energy_star` integration, written for this firmware
+from a different unit, carries a byte-for-byte identical table.
+
+**`state` never reports "limited".** There is no limit-related code in this enum, so a station that
+has stopped because a time or energy limit tripped shows `9` (waiting) — exactly what a happy idle
+car shows. See §7.4.
+
+### 7.2 Write surface (legacy)
+
+`/pageEvent` on the legacy generation accepts **more** than earlier versions of this document
+claimed. Confirmed from the station's own client, with the exact parameter names:
+
+| Parameter | Value | Notes |
+|---|---|---|
+| `currentSet` | 7 … `curDesign` | **step 1 across the whole range**, odd values above 16 A included. Zero-padding is **not** required: `07` and `7` both apply (measured). |
+| `evseEnabled` | 0 / 1 | see §7.7 — a bare `0` is not a stop command |
+| `aiMode` | 0 / 1 | read back as `aiStatus`; legacy offers only off / voltage mode |
+| `aiVoltage` | 180 … 220, step 5 | the current generation's bounds are different and dynamic |
+| `oneCharge` | 0 / 1 | single-charge mode |
+| `timeLimit` | seconds | see §7.4 |
+| `energyLimit` | 0.1 kWh units | see §7.4 |
+| `timerType` | 0 / 1 / 2 | ⚠️ **enum differs from the current generation** — see §7.3 |
+| `systemTime` | epoch seconds of **local** time | see §7.5 |
+| `chargeNow` | `12` | see §7.7 |
+| `groundCtrl` | 0 / 1 | ⚠️ disables protective-earth monitoring. Documented for completeness; do not offer it as a routine control. |
+
+The schedule is **not** on `/pageEvent` — it has its own endpoint, §7.6.
+
+### 7.3 `timerType` — the enum is inverted between generations
+
+| Value | Legacy | Current generation |
+|---|---|---|
+| 0 | Zero | noPWM |
+| 1 | Minus | VAG |
+| 2 | noPWM | minus |
+
+Same field name, same range, different meanings. Anything generation-agnostic here is a bug.
+
+### 7.4 Limits (legacy) — units, sentinels, and a sticky-latch trap
+
+| | Legacy | Current generation |
+|---|---|---|
+| `timeLimit` | seconds; UI slider 0…86400 step 900 | seconds |
+| `timeLimit` "not set" sentinel | **≥ 500000** (the UI writes exactly `500000`) | ≥ 500000 |
+| `energyLimit` | **0.1 kWh units both on write and on read** | ⚠️ **Wh on write, kWh on read** |
+| `energyLimit` "not set" sentinel | **≥ 10000** (the UI writes exactly `10000`) | — |
+| Cost limit, tariffs, `sh1*`/`sh2*`, `suspendLimits` | absent | present |
+
+Enabling a limit is **two writes** — the toggle posts a starting value, the slider posts again on
+every move. There is no atomic "set and enable".
+
+⚠️ **A tripped limit is sticky and invisible.** Observed live on a legacy unit: writing an
+`energyLimit` **below the counter still frozen from the previous session** (§7 intro) put the station
+into a state where it refused to charge, and writing the sentinel back — verified by read-back — did
+**not** release it; a second, later write of the sentinel did. Three things make this worse than it
+sounds:
+
+1. **Reading the parameter back proves nothing** — `/main` reported the sentinel while the station
+   was still refusing to charge. The stored value and the engine's latched decision are separate state.
+2. **`state` never says "limited"** (§7.1) — nothing in the API indicates a limit is the reason.
+3. **The trigger is the stale counter** — because legacy keeps `sessionEnergy`/`sessionTime` after a
+   session ends, *any* limit written below the last session's total trips immediately, even with no
+   car connected.
+
+Rules for any client that writes a limit here: never write a value below the live
+`sessionEnergy`/`sessionTime`; do not treat "wrote the sentinel back" as sufficient; confirm charging
+actually starts. Exactly what clears the latch is **not established**.
+
+A vendor UI quirk, so it does not mislead a future reader: on first load the station's page prints
+`energyLimit.toFixed(1)` without dividing by 10, while every other path divides. The dividing paths
+are the correct ones.
+
+### 7.5 `systemTime` on legacy — read and write are different types
+
+- **Read:** a `"HH:MM:SS"` wall-clock string. No date, no timezone.
+- **Write:** epoch seconds — and the station **stores exactly what it is sent and adds nothing on
+  read** (measured: a UTC epoch was written and read back as UTC wall-clock, while the station's own
+  `timeZone` field said `2`).
+- Therefore write **local** epoch, and do **not** expect `timeZone` to be applied to the clock. It is
+  a stored number this firmware's clock logic does not use.
+- The legacy clock **does not drift — it is lost.** It restarts near zero after a mains cut, so a
+  "sync time" action is needed after every power cycle rather than once. There is no `timeMsg` or
+  `vBat` field here, so a client cannot detect the condition — only its symptom.
+
+### 7.6 `POST /timer` — the schedule (legacy only)
+
+Earlier versions of this document said legacy has "no schedules". That is wrong: it has one, on a
+dedicated endpoint.
+
+```
+POST /timer
+Content-Type: application/x-www-form-urlencoded
+
+isAlarm=true&startTime=23:00&stopTime=07:00&timeZone=2
+```
+
+One window, no weekday selection. The current values are readable from `/init` (§7.8), not from
+`/main`. Posting the four fields back unchanged is safe and re-reads identical.
+
+### 7.7 Charge authority — start is supported, stop is not
+
+There is **no standalone "stop now"** command on the legacy generation. In the station's own client,
+`evseEnabled=0` is written in exactly one place: as a side effect of handing control to the schedule.
+A bare `evseEnabled=0` sent by a client mid-session is a confirmed **no-op** on a live unit.
+
+Vendor-supported ways to end a session: unplug, trip a time/energy limit, or let a schedule window
+close.
+
+**"Charge now" is a packet, not a single write.** The station's own button sends, in order:
+
+```
+oneCharge=0 → evseEnabled=1 → (schedule off: /timer with isAlarm=false)
+→ timeLimit=500000 → energyLimit=10000 → chargeNow=12
+```
+
+A lone `chargeNow=12` clears neither the schedule nor the limits.
+
+### 7.8 `POST /init` on legacy — a different, smaller key set
+
+Legacy `/init` returns **ten** keys, not the current generation's 13/38:
+`httpUsername`, `httpPassword`, `ssidName`, `ssidPassword`, `ssidNameAP`, `ssidPasswordAP`,
+`isAlarm`, `startTime`, `stopTime`, `timeZone`.
+
+⚠️ **Six of those are credentials, in clear text.** `/init` is the only source of the schedule and of
+`timeZone`, so if a client reads it, it must pass the response through an **allow-list** of the four
+non-secret keys (`isAlarm`, `startTime`, `stopTime`, `timeZone`) from the start — never "read
+everything and filter later". At least one existing integration put the whole response into its
+state and into debug logs that users attach to bug reports.
+
+Note also that the station's own client reads `curDesign` and `systemTime` from `/init` even though
+this firmware does not send them — a name appearing in the vendor's client is not proof the firmware
+serves it.
+
+### 7.9 Endpoints that do not exist on legacy — and answer `302`
+
+`/debug`, `/ocppData`, `/ocppEvent`, `/get_logResult`, `/getLogData`, `/ocppconfig` and the service
+page are **absent** on the legacy generation. Probing them returns **HTTP 302 with an empty body and
+no `Content-Type`** — this firmware redirects anything it does not recognise instead of returning
+`404`. Treat `302` as "no such endpoint" when probing.
+
+Consequently there is **no station-side session log** on legacy, and no OCPP.
+
+`POST /scan` (Wi-Fi scan) does exist, but unlike the current generation it returns an **HTML
+fragment**, not JSON. `/config` also exists and takes Wi-Fi *and* web credentials in a single body,
+where the current generation splits them across `/config`, `/configAP` and `/configHttp`.
 
 ---
 
@@ -698,11 +908,11 @@ Key differences vs the current generation:
 | Phase voltage `voltMeasN` | integer V | integer V |
 | Power `powerMeas` | (compute V×I) | integer W |
 | Session/total energy | integer ×0.1 → kWh (`63` = 6.3 kWh) | float kWh (`16.01`) |
-| `systemTime` | `"HH:MM:SS"` string | unix epoch, **local time** — read `+ timeZone*3600`, write true UTC (§4.3) |
+| `systemTime` | **read** `"HH:MM:SS"` string, **write** epoch seconds of local time; the station adds nothing and ignores its own `timeZone` (§7.5) | unix epoch, **local time** — read `+ timeZone*3600`, write true UTC (§4.3) |
 | Temperatures | integer °C | integer °C. **Any reading below −50 means "sensor absent"** (`-60` is the common value) — applies to both generations |
 | `sessionTime` | seconds | seconds |
-| `timeLimit` | seconds | seconds (sentinel ≥ 500000 = unset) |
-| `energyLimit` | — | **Wh on write, kWh on read** (§5.4) |
+| `timeLimit` | seconds (sentinel ≥ 500000 = unset) | seconds (sentinel ≥ 500000 = unset) |
+| `energyLimit` | integer ×0.1 → kWh **both directions** (sentinel ≥ 10000 = unset) — §7.4 | **Wh on write, kWh on read** (§5.4) |
 | `sh*EnergyValue` | — | kWh both directions (§5.4) |
 | Schedule / tariff times | — | minutes since midnight, 0…1439 |
 | `tarif`, `tarifAValue`, `tarifBValue` | — | hundredths of a currency unit per kWh (`513` = 5.13) |
