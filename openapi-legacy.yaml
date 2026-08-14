@@ -1,0 +1,592 @@
+openapi: 3.1.0
+
+# ---------------------------------------------------------------------------
+# LEGACY generation only.
+#
+# This is a SEPARATE spec on purpose. The legacy firmware (marketed as
+# "EnergyStar" before the Eveus rebrand) is not an older revision of the
+# current API — it is a different codebase with a different state enum, an
+# inverted timerType, different limit units, a different write-response
+# contract and a different endpoint set. Mixing the two into one document
+# produced concrete bugs in at least two client integrations.
+#
+# For the current generation use openapi.yaml.
+# Narrative reference, provenance and measurements: API.md §7.
+# ---------------------------------------------------------------------------
+
+info:
+  title: Eveus / EnergyStar EV charger — local HTTP API (LEGACY generation)
+  version: "2026-08-14"
+  summary: Community-documented local API of the pre-rebrand "EnergyStar" firmware.
+  description: |
+    Unofficial, reverse-engineered from the station's own web UI plus live
+    measurement on a legacy unit. Not affiliated with or endorsed by the
+    manufacturer. **Use at your own risk** — this device switches mains power.
+
+    **Scope: legacy generation only.** Identify it by what `/main` does *not*
+    contain: no `verFWWifi`, no `subState`, no `minCurrent`, no `powerMeas`,
+    no serial number. A legacy `/main` was measured at 36 keys, stable across
+    plugged / unplugged / charging.
+
+    Three traps that cost other clients real bugs — read before writing code:
+
+    1. **Every write answers HTTP 200, `text/plain`, zero-length body**, whether
+       accepted or rejected. Success cannot be detected from the response. The
+       only verification is a read-back of `/main`. (The current generation
+       answers `OK` — do not port that check here.)
+    2. **`state` has its own enum** (see the `state` schema). A third-party
+       table for the current generation was mistakenly published for this
+       firmware for a while; it agrees on only two codes. `9` is *waiting*, not
+       "no ground"; `12` is *ready*, not "overcurrent".
+    3. **There is no stop command.** A bare `evseEnabled=0` mid-session is a
+       confirmed no-op. Charging ends by unplugging, a tripped limit, or a
+       schedule window closing.
+
+    `/init` returns six credential fields in clear text — filter with an
+    allow-list, never "read everything and redact later". See API.md §7.8.
+
+    **Probing for endpoints:** this firmware answers **HTTP 302 with an empty
+    body and no `Content-Type`** for any path it does not recognise, instead of
+    `404`. So a 302 means "no such endpoint". Measured absent here:
+    `/debug`, `/ocppData`, `/ocppEvent`, `/get_logResult`, `/getLogData`,
+    `/ocppconfig` and the service page — hence no station-side session log and
+    no OCPP on this generation.
+  license:
+    name: CC BY 4.0
+    url: https://creativecommons.org/licenses/by/4.0/
+  contact:
+    name: Project repository
+    url: https://github.com/Soundistor/eveus-api-doc
+
+servers:
+  - url: http://{host}
+    description: Charger on the local network
+    variables:
+      host:
+        default: 192.0.2.10
+        description: Charger IP address or hostname
+
+tags:
+  - name: status
+    description: Live status and configuration snapshots
+  - name: control
+    description: Setting parameters and firing commands
+  - name: schedule
+    description: The single schedule window (legacy-only endpoint)
+  - name: network
+    description: Wi-Fi configuration
+
+paths:
+  /main:
+    post:
+      tags: [status]
+      operationId: getMainLegacy
+      summary: Live status snapshot (legacy)
+      description: |
+        Empty request body. The station's own UI polls this every second.
+
+        Measured at 36 keys and **stable** across device states on this
+        firmware — unlike the current generation, whose key set varies.
+        Still read defensively: the station is expected to emit implausible
+        frames, and its own client discards any frame failing a plausibility
+        check (e.g. `state > 50`, `curMeas* > 800`, `voltMeas* > 350`).
+      responses:
+        "200":
+          description: Status snapshot
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MainLegacy"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  /pageEvent:
+    post:
+      tags: [control]
+      operationId: setParameterLegacy
+      summary: Set a single parameter (legacy)
+      description: |
+        One `name=value` pair per request, form-urlencoded.
+
+        ⚠️ **The response proves nothing.** HTTP 200, `text/plain`, zero-length
+        body — identical for an accepted write, a rejected value and a
+        parameter name that does not exist (measured: `zzProbeParam=1` answers
+        exactly like `currentSet=11`). Verify by re-reading `/main`.
+
+        The station's own client ignores the next **2** `/main` responses after
+        any write (3 after moving the current slider), because `/main` serves
+        stale values for a moment afterwards.
+      requestBody:
+        required: true
+        content:
+          application/x-www-form-urlencoded:
+            schema:
+              type: object
+              minProperties: 1
+              maxProperties: 1
+              properties:
+                currentSet:
+                  type: integer
+                  minimum: 7
+                  description: |
+                    Charging current in A. Range 7…`curDesign`, **step 1 across
+                    the whole range** (odd values above 16 A are accepted).
+                    Zero-padding is optional: `07` and `7` both apply.
+                    ⚠️ Not range-checked by the station — an out-of-range value
+                    wraps to 8 bits (`999` reads back as `231`).
+                evseEnabled:
+                  type: integer
+                  enum: [0, 1]
+                  description: |
+                    `1` = charging enabled, `0` = disabled — **opposite polarity
+                    to the current generation**. Writing `0` on its own does
+                    **not** stop an active session (confirmed no-op); the vendor
+                    client only ever writes `0` as a side effect of enabling the
+                    schedule.
+                aiMode:
+                  type: integer
+                  enum: [0, 1]
+                  description: Adaptive mode off / on. Read back as `aiStatus`.
+                aiVoltage:
+                  type: integer
+                  minimum: 180
+                  maximum: 220
+                  multipleOf: 5
+                  description: Undervoltage threshold for adaptive mode, in V (default 190).
+                oneCharge:
+                  type: integer
+                  enum: [0, 1]
+                  description: Single-charge mode.
+                timeLimit:
+                  type: integer
+                  description: |
+                    Session time limit in **seconds**. Write `500000` (or any
+                    value ≥ 500000) to mean "not set".
+                    ⚠️ See the sticky-latch warning in API.md §7.4.
+                energyLimit:
+                  type: integer
+                  description: |
+                    Session energy limit in **0.1 kWh units, on write as well as
+                    on read** (`50` = 5.0 kWh) — the current generation takes Wh
+                    on write. Write `10000` (or ≥ 10000) to mean "not set".
+                    ⚠️ Never write a value below the live `sessionEnergy`: it
+                    trips immediately and latches in a way a read-back does not
+                    reveal. See API.md §7.4.
+                timerType:
+                  type: integer
+                  enum: [0, 1, 2]
+                  description: |
+                    ⚠️ **Inverted relative to the current generation.**
+                    Legacy: `0` Zero, `1` Minus, `2` noPWM.
+                systemTime:
+                  type: integer
+                  description: |
+                    Clock, as epoch seconds of **local** time. The station
+                    stores exactly what it is sent and adds nothing on read, and
+                    it does **not** apply its own `timeZone` field here. Read
+                    back from `/main` as a `"HH:MM:SS"` string.
+                    The clock is lost on every mains cut, so this needs
+                    re-sending after each power cycle.
+                chargeNow:
+                  type: integer
+                  enum: [12]
+                  description: |
+                    Part of a **packet**, not a standalone command. The vendor
+                    client sends, in order: `oneCharge=0`, `evseEnabled=1`,
+                    schedule off (`/timer` with `isAlarm=false`),
+                    `timeLimit=500000`, `energyLimit=10000`, `chargeNow=12`.
+                    A lone `chargeNow=12` clears neither schedule nor limits.
+                groundCtrl:
+                  type: integer
+                  enum: [0, 1]
+                  description: |
+                    ⚠️ Protective-earth monitoring on/off. Documented for
+                    completeness only — `0` means the station stops checking
+                    earth, and the `ground` field then reads `1` regardless of
+                    whether earth is actually present. Do not offer this as a
+                    routine control.
+      responses:
+        "200":
+          $ref: "#/components/responses/LegacyWriteAck"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  /timer:
+    post:
+      tags: [schedule]
+      operationId: setScheduleLegacy
+      summary: Set the schedule window (legacy only)
+      description: |
+        The legacy schedule lives here, **not** in `/pageEvent`. One window, no
+        weekday selection. Current values are readable from `/init`, not from
+        `/main`. Posting the four fields back unchanged is safe and re-reads
+        identical.
+
+        Enabling the schedule is also the only path by which the vendor client
+        writes `evseEnabled=0` (see `/pageEvent`).
+      requestBody:
+        required: true
+        content:
+          application/x-www-form-urlencoded:
+            schema:
+              type: object
+              required: [isAlarm, startTime, stopTime, timeZone]
+              properties:
+                isAlarm:
+                  type: boolean
+                  description: Schedule enabled. Sent as the literal string `true` / `false`.
+                startTime:
+                  type: string
+                  pattern: '^\d{2}:\d{2}$'
+                  examples: ["23:00"]
+                stopTime:
+                  type: string
+                  pattern: '^\d{2}:\d{2}$'
+                  examples: ["07:00"]
+                timeZone:
+                  type: integer
+                  description: Stored offset in hours. Not applied to the clock (see `systemTime`).
+      responses:
+        "200":
+          $ref: "#/components/responses/LegacyWriteAck"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  /init:
+    post:
+      tags: [status]
+      operationId: getInitLegacy
+      summary: Config dump — schedule and credentials (legacy)
+      description: |
+        Empty request body. The station's own UI reads this once on page load.
+
+        ⚠️ **Six of the ten keys are credentials in clear text.** This endpoint
+        is the only source of the schedule and of `timeZone`, so a client that
+        needs those must pass the response through an **allow-list** of
+        `isAlarm`, `startTime`, `stopTime`, `timeZone` from the start — never
+        store the whole object and redact later. At least one integration leaked
+        the credentials into debug logs users attach to bug reports.
+
+        Note the legacy set is **ten** keys, unlike the current generation's
+        13 (older firmware) or 38 (newer). The vendor client also reads
+        `curDesign` and `systemTime` from here even though this firmware does
+        not send them.
+      responses:
+        "200":
+          description: Config dump
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/InitLegacy"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  /scan:
+    post:
+      tags: [network]
+      operationId: scanWifiLegacy
+      summary: Wi-Fi scan (legacy — returns HTML)
+      description: |
+        Empty request body. Unlike the current generation, which exposes
+        `/scan` + `/scanResult` as JSON, the legacy firmware returns an **HTML
+        fragment** that its own UI injects directly into the page. There is no
+        `/scanResult` here.
+      responses:
+        "200":
+          description: HTML fragment listing the networks found
+          content:
+            text/html:
+              schema:
+                type: string
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  /config:
+    post:
+      tags: [network]
+      operationId: setConfigLegacy
+      summary: Wi-Fi and web credentials in one body (legacy)
+      description: |
+        The legacy firmware takes station Wi-Fi, access-point Wi-Fi **and** the
+        web login in a single body, where the current generation splits them
+        across `/config`, `/configAP` and `/configHttp`. The station's UI tells
+        the user to power-cycle afterwards.
+
+        Field shapes are intentionally not documented here: a misapplied write
+        can lock you out of the charger's own web interface, and recovery means
+        physical access. Included only so a client knows the endpoint exists and
+        differs.
+      responses:
+        "200":
+          $ref: "#/components/responses/LegacyWriteAck"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+components:
+  responses:
+    LegacyWriteAck:
+      description: |
+        HTTP 200, `text/plain`, **zero-length body** — returned identically for
+        an accepted write, a rejected value, and a nonexistent parameter name.
+        Carries no success information. Verify with a read-back of `/main`.
+      content:
+        text/plain:
+          schema:
+            type: string
+            maxLength: 0
+            examples: [""]
+
+    Unauthorized:
+      description: |
+        Web credentials are set and were not supplied. HTTP Basic.
+        If no password is configured on the device, requests may be accepted
+        unauthenticated.
+
+  schemas:
+    state:
+      type: integer
+      description: |
+        Legacy `state` enum, from the `switch (e.state)` in the station's own web
+        UI, confirmed by live measurement and by an independent integration
+        written for this firmware.
+
+        ⚠️ Codes 1–5, 7, 8, 10 and 11 do **not exist** in this enum — treat them
+        as unknown rather than guessing. Frames with `state > 50` are discarded
+        by the vendor's own client.
+
+        ⚠️ There is **no "limited" code**. A station stopped by a tripped time or
+        energy limit reports `9` (waiting), exactly as it would with an idle car.
+      enum: [0, 6, 9, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22]
+      x-enum-descriptions:
+        0: no data
+        6: charging
+        9: waiting — car connected, not charging
+        12: ready — nothing connected
+        13: delayed start
+        14: overcurrent
+        15: overvoltage
+        16: current leak
+        17: station error
+        18: overtemperature
+        19: locked
+        20: no ground
+        21: plug overheat
+        22: undervoltage
+
+    MainLegacy:
+      type: object
+      description: |
+        Legacy `/main`. Measured at 36 keys, identical across plugged,
+        unplugged and charging states on this firmware.
+
+        Scaling differs from the current generation: current and energy are
+        integers in 0.1 units. Voltage and temperature are plain integers.
+      properties:
+        evseEnabled:
+          type: integer
+          enum: [0, 1]
+          description: "`1` = charging enabled — opposite polarity to the current generation."
+        state:
+          $ref: "#/components/schemas/state"
+        currentSet:
+          type: integer
+          description: Configured charging current, A.
+        curDesign:
+          type: integer
+          description: Hardware maximum current, A. Upper bound for `currentSet`.
+        curMeas1:
+          type: integer
+          description: Phase 1 current, **×0.1 A** (`309` = 30.9 A).
+        curMeas2:
+          type: integer
+          description: Phase 2 current, ×0.1 A. Always 0 unless `typeEvse == 3`.
+        curMeas3:
+          type: integer
+          description: Phase 3 current, ×0.1 A. Always 0 unless `typeEvse == 3`.
+        voltMeas1:
+          type: integer
+          description: Phase 1 voltage, V.
+        voltMeas2:
+          type: integer
+          description: Phase 2 voltage, V. Always 0 unless `typeEvse == 3`.
+        voltMeas3:
+          type: integer
+          description: Phase 3 voltage, V. Always 0 unless `typeEvse == 3`.
+        aiStatus:
+          type: integer
+          description: Adaptive mode state (read name; write as `aiMode`).
+        aiVoltage:
+          type: integer
+          description: Undervoltage threshold for adaptive mode, V. Stored config, not a measurement.
+        aiModecurrent:
+          type: integer
+          description: |
+            Current the adaptive algorithm is allowing, A. Note the lower-case
+            `c` — that is the real field name.
+            ⚠️ **Stale when `aiStatus` is off**: measured reading 7 while the car
+            actually drew 31.5 A. Only meaningful while adaptive mode is on.
+        ground:
+          type: integer
+          enum: [0, 1]
+          description: |
+            `1` = protective earth present. ⚠️ Reads `1` regardless when
+            `groundCtrl` is `0`, i.e. when the station is not checking. Not
+            evidence of a verified earth on its own.
+        groundCtrl:
+          type: integer
+          enum: [0, 1]
+          description: "`1` = PE monitoring enabled. Stored configuration, not a fault flag."
+        timeLimit:
+          type: integer
+          description: Session time limit, seconds. **≥ 500000 means "not set"**.
+        energyLimit:
+          type: integer
+          description: Session energy limit, **×0.1 kWh**. **≥ 10000 means "not set"**.
+        temperature1:
+          type: integer
+          description: |
+            Box temperature, °C. Runs hot under load — 71 °C measured at 31.5 A
+            against 44–46 °C idle, with no fault raised.
+        temperature2:
+          type: integer
+          description: |
+            Plug temperature, °C. **Any value below −50 means "no sensor"**
+            (`-60` is typical); the station's own UI prints `N/A`.
+        oneCharge:
+          type: integer
+          enum: [0, 1]
+        sessionEnergy:
+          type: integer
+          description: |
+            Session energy, **×0.1 kWh**. ⚠️ **Survives the end of the session
+            and the unplug** — stays frozen at the last session's total until a
+            new session starts. Usable as a "last session" value, and the reason
+            the limit trap in API.md §7.4 fires with no car connected.
+        sessionTime:
+          type: integer
+          description: Session duration, seconds. Same survive-the-unplug behaviour as `sessionEnergy`.
+        totalEnergy:
+          type: integer
+          description: Lifetime energy, **×0.1 kWh**.
+        timerType:
+          type: integer
+          enum: [0, 1, 2]
+          description: "⚠️ Inverted vs the current generation. Legacy: 0 Zero, 1 Minus, 2 noPWM."
+        systemTime:
+          type: string
+          pattern: '^\d{2}:\d{2}:\d{2}$'
+          description: |
+            Clock as a wall-clock string — no date, no timezone. Written as
+            epoch seconds instead (see `/pageEvent`). The clock restarts near
+            zero after a mains cut, and this firmware exposes neither a
+            clock-invalid flag nor an RTC-battery voltage, so the condition is
+            undetectable from the API.
+          examples: ["07:08:34"]
+        typeEvse:
+          type: integer
+          description: |
+            Hardware type. **`3` means three-phase** — the station's own UI shows
+            phases 2/3 only under that check. Renamed to `evseType` on the
+            current generation.
+        typeRelay:
+          type: integer
+        leakValue:
+          type: integer
+          description: Raw leakage-channel reading. Scale is not established; do not label it mA.
+        voltKoef1: { type: integer, description: Calibration coefficient. }
+        voltKoef2: { type: integer, description: Calibration coefficient. }
+        voltKoef3: { type: integer, description: Calibration coefficient. }
+        curKoef1: { type: integer, description: Calibration coefficient. }
+        curKoef2: { type: integer, description: Calibration coefficient. }
+        curKoef3: { type: integer, description: Calibration coefficient. }
+        freqKoef: { type: integer, description: Calibration coefficient. }
+        leakKoef: { type: integer, description: Calibration coefficient. }
+      examples:
+        - evseEnabled: 1
+          state: 6
+          currentSet: 32
+          curDesign: 32
+          curMeas1: 309
+          curMeas2: 0
+          curMeas3: 0
+          voltMeas1: 218
+          voltMeas2: 0
+          voltMeas3: 0
+          aiStatus: 0
+          aiVoltage: 200
+          aiModecurrent: 7
+          ground: 1
+          groundCtrl: 0
+          timeLimit: 500000
+          energyLimit: 10000
+          temperature1: 71
+          temperature2: -60
+          oneCharge: 0
+          sessionEnergy: 11
+          sessionTime: 603
+          totalEnergy: 11620
+          timerType: 2
+          systemTime: "00:12:01"
+          typeEvse: 1
+          typeRelay: 0
+          voltKoef1: 342
+          voltKoef2: 342
+          voltKoef3: 342
+          curKoef1: 350
+          curKoef2: 350
+          curKoef3: 350
+          freqKoef: 16
+          leakKoef: 15
+          leakValue: 0
+
+    InitLegacy:
+      type: object
+      description: |
+        Legacy `/init` — ten keys. Six are credentials in clear text; only the
+        four schedule/timezone keys are safe to keep. Filter with an allow-list.
+      properties:
+        isAlarm:
+          type: string
+          enum: ["true", "false"]
+          description: Schedule enabled.
+        startTime:
+          type: string
+          examples: ["23:00"]
+        stopTime:
+          type: string
+          examples: ["07:00"]
+        timeZone:
+          type: integer
+          description: Stored offset in hours. Not applied to the clock.
+        httpUsername:
+          type: string
+          description: ⚠️ Credential, returned in clear text. Do not store or log.
+        httpPassword:
+          type: string
+          description: ⚠️ Credential, returned in clear text. Do not store or log.
+        ssidName:
+          type: string
+          description: ⚠️ Station Wi-Fi SSID.
+        ssidPassword:
+          type: string
+          description: ⚠️ Credential, returned in clear text. Do not store or log.
+        ssidNameAP:
+          type: string
+          description: ⚠️ Access-point SSID.
+        ssidPasswordAP:
+          type: string
+          description: ⚠️ Credential, returned in clear text. Do not store or log.
+
+  securitySchemes:
+    basicAuth:
+      type: http
+      scheme: basic
+      description: |
+        Optional web login, configured on the device. If no password is set, the
+        device may accept unauthenticated requests. Transport is plain HTTP on
+        the LAN with no TLS, so treat the network itself as part of your security
+        boundary.
+
+security:
+  - basicAuth: []
+  - {}

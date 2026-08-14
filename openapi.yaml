@@ -20,8 +20,14 @@ info:
     - Transport is plain **HTTP** on port 80 (no TLS), LAN only.
     - Auth is **HTTP Basic** (may be disabled if no password is set on the device).
 
-    Field set matches firmware family `?PGRW001A-R3.0x` (current generation). Older
-    "legacy" firmware differs — see `API.md` §7.
+    Field set matches firmware family `?PGRW001A-R3.0x` (**current generation**).
+
+    Older "legacy" firmware (marketed as "EnergyStar" before the rebrand) is **not**
+    covered by this file — it is a different codebase with a different `state` enum,
+    an inverted `timerType`, different limit units, a different write-response
+    contract and a smaller endpoint set. It has its own spec:
+    **`openapi-legacy.yaml`**, with the narrative in `API.md` §7. Do not assume
+    anything in this file transfers.
   license:
     name: CC BY 4.0
     url: https://creativecommons.org/licenses/by/4.0/

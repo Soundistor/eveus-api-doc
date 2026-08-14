@@ -20,12 +20,31 @@ scripts, energy managers) can read status and control the charger over the LAN.
 - Single-phase vs three-phase differences
 - Legacy vs current API generations, and changes across firmware versions
 
-➡️ **[openapi.yaml](openapi.yaml)** — machine-readable OpenAPI 3.1 spec (all 12
-endpoints, `MainResponse` schema, examples). Import it into Swagger UI, Postman,
-Insomnia, or generate clients with `openapi-generator`.
+➡️ **[openapi.yaml](openapi.yaml)** — machine-readable OpenAPI 3.1 spec for the
+**current generation** (all 12 endpoints, `MainResponse` schema, examples). Import it
+into Swagger UI, Postman, Insomnia, or generate clients with `openapi-generator`.
+
+➡️ **[openapi-legacy.yaml](openapi-legacy.yaml)** — a **separate** OpenAPI 3.1 spec for
+the **legacy** generation (the pre-rebrand "EnergyStar" firmware). Deliberately a second
+file rather than branches inside the first: legacy is not an older revision of the same
+API but a different codebase — different `state` enum, inverted `timerType`, different
+limit units, different write-response contract, smaller endpoint set. Conflating the two
+has already caused real bugs in client integrations.
 
 > Note: the API predates OpenAPI conventions — every operation is `POST` (even
 > reads), so tools will show reads as POST operations. That is expected.
+
+### ⚠️ Errata — legacy `state` enum corrected 2026-08-14
+
+Every version of this reference published before **2026-08-14** contained an **incorrect
+`state` enum for the legacy generation**. It was inherited from a third-party
+current-generation config and applied to the wrong firmware; it matches the real enum on
+only two codes.
+
+The practical effect is inverted states, not merely wrong labels — a car sitting plugged
+in reports `9`, which the old table called `no_ground`, and an unplugged station reports
+`12`, which it called `overcurrent`. **If you copied that table, please re-check against
+API.md §7.1.**
 
 ## Quick start
 
@@ -49,7 +68,7 @@ curl -s -u USER:PASS -X POST \
 |---|---|
 | `1PGRW001A-R3.0x` | single-phase, current generation |
 | `3PGRW001A-R3.0x` | three-phase, current generation (identical API) |
-| older units | legacy generation — see [API.md §7](API.md#7-legacy-generation-differences) |
+| older units ("EnergyStar") | legacy generation — a different API: see [API.md §7](API.md#7-legacy-generation-differences) and [openapi-legacy.yaml](openapi-legacy.yaml) |
 
 ## Manufacturer & official resources
 
